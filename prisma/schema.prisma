@@ -1,0 +1,518 @@
+// ============================================================
+// 错题管理系统 · Prisma Schema
+// 版本：P0 骨架（完整字段，按需激活）
+// 数据库：本地 PostgreSQL（方案B）
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===== 用户表 =====
+model User {
+  id               String   @id @default(cuid())
+  username         String   @unique
+  passwordHash     String
+  role             String   @default("user")   // user | admin
+  passwordExpireAt DateTime
+  isActive         Boolean  @default(true)
+
+  // 考试目标
+  examType       String   @default("guo_kao")  // guo_kao | sheng_kao | tong_kao
+  targetProvince String?
+  targetScore    Int      @default(85)
+  examDate       DateTime?
+  dailyGoal      Int      @default(70)
+
+  createdAt  DateTime @default(now())
+  userErrors UserError[]
+  notes      UserNote[]
+  insights   UserInsight[]
+  sectionStats UserSectionStats?
+  mockTests  MockTestRecord[]
+  importJobs ImportJob[]
+
+  @@map("users")
+}
+
+// ===== 公用题目表 =====
+model Question {
+  id       String  @id @default(cuid())
+  addedBy  String
+  content  String                          // 题目正文
+  options  String?                         // JSON: ["A.xxx","B.xxx","C.xxx","D.xxx"]
+  answer   String                          // 正确答案（A/B/C/D）
+  analysis String?                         // 官方解析
+
+  // 题型分类
+  type    String                           // 判断推理 | 言语理解 | 数量关系 | 资料分析 | 常识判断
+  subtype String?                          // 逻辑判断 | 图形推理 | 类比推理...
+  sub2    String?                          // 翻译推理 | 充分必要条件...
+  skillTags String?                        // JSON: ["翻译推理","充分必要条件"]
+
+  // 来源标注
+  examType         String  @default("common")  // common | guo_kao | sheng_kao | tong_kao
+  srcProvince      String?
+  srcExamSession   String?
+  srcYear          String?
+  srcOrigin        String?
+  isFromOfficialBank Boolean @default(false)
+
+  // 难度
+  difficulty           String?              // easy | medium | hard
+  estimatedCorrectRate Float?
+
+  // 共享层
+  isPublic           Boolean @default(true)
+  isVerified         Boolean @default(false)
+  verifyCount        Int     @default(0)
+  sharedAiAnalysis   String?               // 公共AI解析（第一个做错的用户触发，后续零成本）
+  sharedMemoryAnchor String?               // 公共记忆锚点
+
+  createdAt DateTime @default(now())
+  userErrors UserError[]
+  practiceRecords PracticeRecord[]
+
+  @@map("questions")
+}
+
+// ===== 用户错题表（核心表）=====
+model UserError {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id])
+
+  myAnswer   String
+
+  // AI 分析（个人层，覆盖公共层）
+  aiRootReason     String?
+  aiErrorReason    String?
+  aiThinking       String?
+  aiNoteDraft      String?
+  aiReasonTag      String?
+  aiActionRule     String?
+  aiAnalyzedAt     DateTime?
+  customAiAnalysis String?
+
+  // 手动填写
+  errorReason String?
+  rootReason  String?
+  reasonTag   String?
+
+  // ===== 遗忘曲线核心字段 =====
+  nextReviewAt   DateTime @default(now())
+  reviewInterval Int      @default(1)       // 当前间隔档位 [1,3,7,15,30]
+  masteryPercent Int      @default(0)       // 0-100
+  reviewCount    Int      @default(0)
+  correctCount   Int      @default(0)
+  lastReviewedAt DateTime?                  // 上次实际复习时间（用于 decayRate 计算）
+
+  // 稳定性追踪
+  masteryHistory  String  @default("[]")    // JSON: [30,60,75,80] 历次 mastery
+  stabilityScore  Float   @default(0.0)     // 近3次方差倒数，越高越稳
+  decayRatePerDay Float   @default(0.0)     // 每日遗忘速率
+
+  // 状态标记
+  isHot             Boolean @default(false) // 连续答错/思路wrong → 标红
+  isLastSlowCorrect Boolean @default(false) // 最近一次是否慢正确
+  isStockified      Boolean @default(false) // 是否已存量化（mastery≥80% 且稳定）
+  reboundAlert      Boolean @default(false) // 反弹预警（比历史最高低20%+）
+
+  // 记忆锚点（个人层）
+  personalMemoryAnchor String?
+
+  // 技能追踪
+  skillProgress    String?                  // JSON: {"翻译推理":2}
+  skillReviewCount String?                  // JSON: {"翻译推理":7}
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  reviews   ReviewRecord[]
+
+  @@unique([userId, questionId])
+  @@map("user_errors")
+}
+
+// ===== 每次答题记录 =====
+model ReviewRecord {
+  id          String    @id @default(cuid())
+  userId      String
+  userErrorId String
+  userError   UserError @relation(fields: [userErrorId], references: [id])
+
+  questionSource String @default("real") // real | ai_generated | user_created
+
+  // 答题结果
+  isCorrect     Boolean
+  timeSpent     Int?                      // 用时（秒）
+  isTimeout     Boolean @default(false)
+  isSlowCorrect Boolean @default(false)  // 答对但超速度警戒线
+
+  // 思路输入
+  thinkingInputType  String?              // sketch | text | null
+  userThinkingText   String?
+  userThinkingImage  String?              // 草稿图 URL
+  isAutoSubmitted    Boolean @default(false)
+
+  // AI 思路验证结果
+  thinkingVerdict    String?              // correct | partial | wrong
+  thinkingFeedback   String?
+  thinkingVerifiedAt DateTime?
+
+  // 升降级矩阵结果
+  resultMatrix String?                   // 1=升级 | 2=维持(思路partial) | 3=维持(思路wrong) | 4=降级
+
+  createdAt DateTime @default(now())
+
+  @@map("review_records")
+}
+
+// ===== 冷启动答对记录（真题练习中答对，未入错题本）=====
+model PracticeRecord {
+  id           String   @id @default(cuid())
+  userId       String
+  questionId   String
+  question     Question @relation(fields: [questionId], references: [id])
+  isCorrect    Boolean  @default(false)
+  isPending    Boolean  @default(false)   // true=导入未做，false=已练过
+  nextShowAt   DateTime?                  // 答对时 = now()+7天，7天内不重推
+  questionType String?                   // 缓存题型，供预测分聚合
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, questionId])
+  @@index([userId, isPending])           // 首页拉待练队列用
+  @@map("practice_records")
+}
+
+// ===== 用户笔记 =====
+model UserNote {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id])
+  type      String
+  subtype   String?
+  title     String
+  content   String                        // Markdown
+  isPrivate Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("user_notes")
+}
+
+// ===== 用户固化规律 =====
+model UserInsight {
+  id             String  @id @default(cuid())
+  userId         String
+  user           User    @relation(fields: [userId], references: [id])
+  skillTag       String
+  insightType    String                   // rule | trap | formula
+  aiDraft        String
+  finalContent   String
+  sourceErrorIds String?                  // JSON: 来源错题ID列表
+  timesApplied   Int     @default(0)
+  aiGenCount     Int     @default(0)
+  domainExamples String?
+  isActive       Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("user_insights")
+}
+
+// ===== 用户分题型统计 =====
+model UserSectionStats {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id])
+  statsJson      String                   // JSON: 各题型答对率/avgSeconds/scoreWeight
+  predictedScore Int      @default(0)
+  targetScore    Int      @default(85)
+  updatedAt      DateTime @updatedAt
+
+  @@map("user_section_stats")
+}
+
+// ===== 模拟考成绩 =====
+model MockTestRecord {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  testDate      DateTime @default(now())
+  sourceName    String
+  examType      String   @default("guo_kao")
+  totalScore    Int
+  totalScoreMax Int      @default(100)
+  scoreJson     String?                   // JSON: 各题型得分
+  daysToExam    Int?
+  notes         String?
+
+  createdAt DateTime @default(now())
+
+  @@map("mock_test_records")
+}
+
+// ===== PDF 导入任务 =====
+model ImportJob {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  filename        String
+  status          String   @default("processing") // processing | reviewing | completed | failed
+  parsedQuestions String?                          // JSON: 解析出的题目列表
+  importedCount   Int      @default(0)
+  failReason      String?
+
+  createdAt DateTime @default(now())
+
+  @@map("import_jobs")
+}
+
+// ===== 考点频率统计 =====
+model ExamTopicStats {
+  id           String   @id @default(cuid())
+  examType     String
+  srcProvince  String?
+  skillTag     String
+  sectionType  String
+  totalCount   Int      @default(0)
+  frequency    Float    @default(0.0)
+  avgDifficulty Float   @default(0.5)
+  lastExamYear Int?
+  updatedAt    DateTime @updatedAt
+
+  @@unique([examType, srcProvince, skillTag])
+  @@map("exam_topic_stats")
+}
+
+// ===== 好题知识库（§好题喂给AI功能）=====
+// 用户手动喂入或从题库标记的高质量题目
+// AI 提取解法模式，向量化存储，作为 RAG 检索源
+model KnowledgeEntry {
+  id          String   @id @default(cuid())
+  userId      String                            // 贡献者
+  isPublic    Boolean  @default(true)           // true=所有用户可检索；false=仅本人
+
+  // 来源题目（可以是已有题目，也可以是纯文字输入）
+  questionId  String?                           // 关联 Question（可选）
+  rawContent  String                            // 原始题目文字（用于 AI 分析）
+  rawAnalysis String                            // 原始解析文字（用户提供的好解析）
+
+  // AI 提取的结构化解法模式
+  questionType     String                       // 适用题型
+  methodName       String                       // 方法名称，如"充分必要条件翻译法"
+  applicableTypes  String                       // JSON: 适用范围，如["翻译推理","假言命题"]
+  triggerKeywords  String                       // JSON: 触发关键词，如["如果","只有","必须"]
+  solutionSteps    String                       // JSON: 标准化解题步骤数组
+  exampleSolution  String                       // 针对本题的示范解答（few-shot用）
+  qualityScore     Float    @default(0.0)       // AI自评解法质量（0-1）
+
+  // 向量（pgvector，用于语义检索）
+  // 向量维度：text-embedding-3-small = 1536，Claude不直接提供embedding
+  // 使用 Supabase 内置 pgvector 或 OpenAI embedding API
+  contentEmbedding Unsupported("vector(1536)")? // 题目+解析的语义向量
+
+  aiExtractedAt DateTime?                       // AI 提取时间
+  usageCount    Int      @default(0)            // 被检索引用次数
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("knowledge_entries")
+}
+
+// ===== 分析任务队列 =====
+// 记录哪些考点/题目需要AI分析，已分析则记录结果
+// 批量导入真题后自动写入，分析服务按 priority 消费
+model AnalysisQueue {
+  id          String   @id @default(cuid())
+
+  // 任务来源
+  userId      String?                         // null = 系统级任务（公共知识库）
+  triggeredBy String   @default("import")     // import | user_error | manual | scheduled
+
+  // 分析对象
+  targetType  String                          // skill_tag | question | error_pattern | user_progress
+  targetId    String                          // skillTag名称 / questionId / userId
+  targetMeta  String?                         // JSON: 附加上下文，如 { examType, frequency, questionCount }
+
+  // 优先级（来自 ExamTopicStats.frequency，高频考点优先）
+  priority    Float    @default(0.5)          // 0-1，越高越优先处理
+
+  // 状态
+  status      String   @default("pending")    // pending | processing | done | failed | skipped
+  failReason  String?
+  retryCount  Int      @default(0)
+
+  // 结果
+  resultId    String?                         // 指向 KnowledgeEntry.id
+  resultSummary String?                       // 一句话摘要（不用 JOIN 也能快速展示）
+  analyzedAt  DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, priority])                 // 分析服务取任务时用
+  @@index([targetType, targetId])             // 查重用
+  @@map("analysis_queue")
+}
+
+// ===================================================================
+// 三层学习数据结构
+// Layer 1: ActivityLog    原始事件流（黑匣子）
+// Layer 2: AnalysisSnapshot  AI分析结果（复盘报告）
+// Layer 3: SystemInsight  可执行建议（修改飞行手册）
+// ===================================================================
+
+// ── Layer 1: 原始事件流 ────────────────────────────────────────────
+model ActivityLog {
+  id          String   @id @default(cuid())
+  userId      String?                           // null = 系统事件
+
+  // 事件分类
+  eventType   String                            // practice.answer / error.stockified / ai.analysis_done / ...
+  entityType  String?                           // question / userError / knowledge / import / ...
+  entityId    String?                           // 关联的实体 ID
+
+  // 完整上下文（JSON，保留所有有价值的字段）
+  payload     String                            // JSON: 事件详细数据
+  // 示例 practice.answer:
+  // { questionType, masteryBefore, masteryAfter, isCorrect, timeSpent,
+  //   isSlowCorrect, thinkingVerdict, resultMatrix, daysToExam, practiceMode }
+
+  // 会话上下文（便于识别学习模式）
+  sessionId   String?                           // 同一练习session的事件归组
+  deviceHint  String?                           // mobile / desktop（从 UA 推断）
+  hourOfDay   Int?                              // 0-23，识别最优学习时段
+
+  createdAt   DateTime @default(now())
+
+  @@index([userId, eventType, createdAt])       // 分析服务按用户+类型+时间查询
+  @@index([eventType, createdAt])               // 全局分析用
+  @@index([userId, createdAt])                  // 用户时间线
+  @@map("activity_logs")
+}
+
+// ── Layer 2: AI 分析结果存储 ───────────────────────────────────────
+model AnalysisSnapshot {
+  id          String   @id @default(cuid())
+  userId      String?                           // null = 全局分析
+
+  // 本次分析的元信息
+  analysisType  String                          // user_pattern / skill_gap / progress / strategy / system_feedback
+  triggerEvent  String?                         // 什么触发了这次分析（scheduled / threshold / manual）
+  dataRangeFrom DateTime?                       // 分析覆盖的数据时间范围
+  dataRangeTo   DateTime?
+
+  // 本次分析的输入上下文（记录AI看到了什么）
+  inputSummary  String                          // JSON: 输入数据摘要（题目数/错误率/趋势等）
+  prevSnapshotId String?                        // 上一次分析的ID（飞轮上下文链）
+
+  // AI 分析输出
+  findings      String                          // JSON数组: 本次发现的洞察列表
+  // 示例: [
+  //   { type: "weakness", skillTag: "充分必要条件", confidence: 0.85,
+  //     evidence: "最近14天该考点错误率68%", trend: "worsening" },
+  //   { type: "strength", skillTag: "资料分析", confidence: 0.9,
+  //     evidence: "mastery稳定在85%+，遗忘率极低" }
+  // ]
+
+  recommendations String                        // JSON数组: 可执行建议
+  // 示例: [
+  //   { action: "adjust_interval", target: "判断推理", value: [1,2,4,10,20],
+  //     reason: "该用户遗忘速率比均值快2.3倍" },
+  //   { action: "add_to_queue", skillTag: "削弱题", priority: 0.9 }
+  // ]
+
+  // 质量评估
+  confidenceScore  Float    @default(0.0)       // 0-1，分析可信度
+  dataPointsUsed   Int      @default(0)         // 用了多少条 ActivityLog
+  wasActedUpon     Boolean  @default(false)     // 建议是否被系统采纳
+
+  // 验证（后续分析可以验证上次的预测是否准确）
+  validatedAt      DateTime?
+  validationResult String?                       // confirmed / refuted / partial
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, analysisType, createdAt])
+  @@map("analysis_snapshots")
+}
+
+// ── Layer 3: 反哺系统的可执行结论 ─────────────────────────────────
+model SystemInsight {
+  id          String   @id @default(cuid())
+  userId      String?                           // null = 全局规则
+
+  // 来源
+  sourceSnapshotId String?                      // 来自哪次 AnalysisSnapshot
+
+  // 洞察内容
+  insightCategory String                        // interval_optimization / roi_weight / strategy_threshold / learning_pattern
+  targetEntity    String                        // 作用对象: questionType / skillTag / system_param
+  targetValue     String?                       // 具体值（如题型名称）
+
+  // 建议的系统参数变更
+  paramKey        String                        // 要修改的参数名
+  paramValueOld   String?                       // 原来的值
+  paramValueNew   String                        // 建议的新值
+  // 示例:
+  // paramKey="interval_sequence.判断推理" paramValueNew="[1,2,5,12,25]"
+  // paramKey="errorROI.stockifyProb.threshold" paramValueNew="0.75"
+  // paramKey="activation_trigger_days" paramValueNew="17"
+
+  // 状态
+  status          String   @default("pending")  // pending | applied | rejected | expired
+  appliedAt       DateTime?
+  appliedBy       String?                       // auto / admin_userId
+  rejectionReason String?
+
+  // 效果追踪（应用后N天，指标是否改善）
+  effectMetric    String?                       // 追踪哪个指标
+  effectBefore    Float?                        // 应用前的指标值
+  effectAfter     Float?                        // 应用后的指标值
+  effectMeasuredAt DateTime?
+
+  confidence      Float    @default(0.0)        // 建议的置信度
+  expiresAt       DateTime?                     // 超过这个时间如未应用则过期
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([insightCategory, status])
+  @@map("system_insights")
+}
+
+// ===== AI 分析结果讨论（防幻觉校正）=====
+model AnalysisDiscussion {
+  id            String   @id @default(cuid())
+  userId        String
+  snapshotId    String                          // 关联 AnalysisSnapshot
+  findingIndex  Int                             // 第几条 finding（0-based）
+
+  // 用户反馈
+  action        String                          // confirm | refute | supplement
+  comment       String?                         // 用户补充说明（否定时必填原因）
+
+  // 影响置信度
+  confidenceDelta Float  @default(0.0)          // confirm=+0.15, refute=-0.7, supplement=0
+
+  // AI 回应（可选）
+  aiResponse    String?                         // AI 对用户反馈的回应
+
+  createdAt     DateTime @default(now())
+
+  @@index([snapshotId, findingIndex])
+  @@map("analysis_discussions")
+}

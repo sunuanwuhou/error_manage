@@ -1,0 +1,24 @@
+{
+  "name": "wrongquestion-analysis-worker",
+  "version": "1.0.0",
+  "description": "独立分析服务 — 共享主项目数据库，定时/手动触发 AI 分析，结果写回知识库",
+  "scripts": {
+    "start":    "tsx src/index.ts",
+    "once":     "tsx src/index.ts --once",
+    "watch":    "tsx watch src/index.ts",
+    "errors":   "tsx src/index.ts --task=errors",
+    "progress": "tsx src/index.ts --task=progress",
+    "patterns": "tsx src/index.ts --task=patterns",
+    "strategy": "tsx src/index.ts --task=strategy"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.0",
+    "@prisma/client":    "^5.10.0",
+    "date-fns":          "^3.3.1"
+  },
+  "devDependencies": {
+    "prisma": "^5.10.0",
+    "tsx":    "^4.7.0",
+    "@types/node": "^20"
+  }
+}

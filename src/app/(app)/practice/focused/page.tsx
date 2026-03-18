@@ -1,0 +1,256 @@
+'use client'
+// src/app/(app)/practice/focused/page.tsx
+// 同错因聚焦模式（B2）+ 计时训练模式（B1）
+
+import { useEffect, useState, useRef } from 'react'
+import { useSearchParams, useRouter } from 'next/navigation'
+import { SPEED_LIMITS } from '@/lib/mastery-engine'
+
+interface FocusedItem {
+  userErrorId:   string
+  questionId:    string
+  masteryPercent: number
+  aiActionRule?: string
+  reviewCount:   number
+  question: {
+    content: string; options: string; answer: string
+    type: string; subtype?: string; sharedAiAnalysis?: string
+  }
+}
+
+interface TagOption { tag: string; count: number }
+
+export default function FocusedPracticePage() {
+  const router     = useRouter()
+  const params     = useSearchParams()
+  const [tag, setTag]             = useState(params.get('tag') ?? '')
+  const [items, setItems]         = useState<FocusedItem[]>([])
+  const [tags, setTags]           = useState<TagOption[]>([])
+  const [idx, setIdx]             = useState(0)
+  const [timedMode, setTimedMode] = useState(false)
+  const [selected, setSelected]   = useState<string | null>(null)
+  const [revealed, setRevealed]   = useState(false)
+  const [timeLeft, setTimeLeft]   = useState(0)
+  const [timeSpent, setTimeSpent] = useState(0)
+  const [loading, setLoading]     = useState(true)
+  const startRef  = useRef(Date.now())
+  const timerRef  = useRef<NodeJS.Timeout>()
+
+  function load(t: string) {
+    setLoading(true)
+    fetch(`/api/practice/focused?tag=${encodeURIComponent(t)}`)
+      .then(r => r.json())
+      .then(data => {
+        setItems(data.errors ?? [])
+        setTags(data.availableTags ?? [])
+        setIdx(0); setSelected(null); setRevealed(false)
+        setLoading(false)
+      })
+  }
+
+  useEffect(() => { load(tag) }, [tag])
+
+  const current = items[idx]
+  const opts: string[] = current?.question?.options ? JSON.parse(current.question.options) : []
+
+  // 计时器（B1）
+  useEffect(() => {
+    if (!current || revealed) { clearInterval(timerRef.current); return }
+    startRef.current = Date.now()
+    const limit = SPEED_LIMITS[current.question.type] ?? 90
+    const timedLimit = timedMode ? Math.floor(limit * 0.6) : limit
+    setTimeLeft(timedLimit)
+
+    timerRef.current = setInterval(() => {
+      const elapsed = Math.round((Date.now() - startRef.current) / 1000)
+      const remaining = timedLimit - elapsed
+      setTimeLeft(Math.max(0, remaining))
+      if (timedMode && remaining <= 0) {
+        clearInterval(timerRef.current)
+        handleReveal('__timeout__')
+      }
+    }, 500)
+    return () => clearInterval(timerRef.current)
+  }, [idx, revealed, timedMode, current])
+
+  function handleSelect(opt: string) {
+    if (revealed) return
+    const letter = opt.charAt(0)
+    setSelected(letter)
+    handleReveal(letter)
+  }
+
+  async function handleReveal(answer: string) {
+    clearInterval(timerRef.current)
+    const spent = Math.round((Date.now() - startRef.current) / 1000)
+    setTimeSpent(spent)
+    setRevealed(true)
+
+    const isCorrect = answer === current.question.answer
+    const limit = SPEED_LIMITS[current.question.type] ?? 90
+    const isSlowCorrect = isCorrect && spent > (timedMode ? limit * 0.6 : limit)
+
+    await fetch('/api/review/submit', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userErrorId:  current.userErrorId,
+        isCorrect:    answer !== '__timeout__' ? isCorrect : false,
+        timeSpent:    spent,
+        isSlowCorrect,
+        practiceMode: timedMode ? 'timed' : 'focused',
+      }),
+    })
+  }
+
+  function handleNext() {
+    if (idx >= items.length - 1) { router.push('/dashboard'); return }
+    setIdx(i => i + 1); setSelected(null); setRevealed(false)
+  }
+
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-gray-400">加载中...</div>
+
+  // 标签选择页
+  if (!tag || items.length === 0) {
+    return (
+      <div className="max-w-lg mx-auto px-4 pt-4 pb-8">
+        <div className="flex items-center gap-3 mb-6">
+          <button onClick={() => router.back()} className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center">←</button>
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">聚焦模式</h1>
+            <p className="text-xs text-gray-400 mt-0.5">集中攻克一个错因类型</p>
+          </div>
+        </div>
+        {tags.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <p className="text-4xl mb-3">📭</p>
+            <p>还没有足够的错因数据</p>
+            <p className="text-xs mt-1">至少需要2道同类错因的题目</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {tags.map(t => (
+              <button key={t.tag} onClick={() => setTag(t.tag)}
+                className="w-full text-left bg-white rounded-2xl border border-gray-100 shadow-sm p-4 hover:border-blue-200 transition-colors">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold text-gray-900">{t.tag}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{t.count} 道题</p>
+                  </div>
+                  <span className="text-gray-300 text-xl">›</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const limit = SPEED_LIMITS[current?.question?.type ?? ''] ?? 90
+  const timedLimit = timedMode ? Math.floor(limit * 0.6) : limit
+  const timeRatio = timeLeft / timedLimit
+  const isOvertime = timeLeft <= 0
+
+  return (
+    <div className="max-w-lg mx-auto px-4 pt-4 pb-24">
+      {/* 头部 */}
+      <div className="flex items-center gap-3 mb-3">
+        <button onClick={() => setTag('')} className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center">←</button>
+        <div className="flex-1">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-700">聚焦：{tag}</span>
+            <span className="text-xs text-gray-400">{idx + 1}/{items.length}</span>
+          </div>
+          <div className="h-1 bg-gray-100 rounded-full mt-1 overflow-hidden">
+            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${((idx + 1) / items.length) * 100}%` }} />
+          </div>
+        </div>
+        {/* B1: 计时模式切换 */}
+        <button onClick={() => setTimedMode(m => !m)}
+          className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-colors
+            ${timedMode ? 'bg-red-50 border-red-200 text-red-600' : 'border-gray-200 text-gray-500'}`}>
+          {timedMode ? '⏱ 限时' : '⏱ 普通'}
+        </button>
+      </div>
+
+      {/* 计时器（B1）*/}
+      {!revealed && (
+        <div className="flex items-center gap-2 mb-3">
+          <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all"
+              style={{
+                width:           `${timeRatio * 100}%`,
+                backgroundColor: timeRatio > 0.5 ? '#22c55e' : timeRatio > 0.25 ? '#f59e0b' : '#ef4444',
+              }} />
+          </div>
+          <span className={`text-sm tabular-nums font-mono w-8 text-right ${isOvertime ? 'text-red-500 font-bold' : 'text-gray-400'}`}>
+            {timeLeft}s
+          </span>
+        </div>
+      )}
+
+      {/* 行动规则（聚焦模式的关键，做题前提示）*/}
+      {current.aiActionRule && !revealed && (
+        <div className="bg-blue-50 border border-blue-100 rounded-xl px-3 py-2 mb-3">
+          <p className="text-xs text-blue-600">
+            <span className="font-medium">记住：</span>{current.aiActionRule}
+          </p>
+        </div>
+      )}
+
+      {/* 题目 */}
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-3">
+        <p className="text-base text-gray-900 leading-relaxed">{current.question.content}</p>
+      </div>
+
+      {/* 选项 */}
+      <div className="space-y-2 mb-4">
+        {opts.map(opt => {
+          const letter = opt.charAt(0)
+          const isCorrect = letter === current.question.answer
+          const isMine = letter === selected
+          return (
+            <button key={opt} onClick={() => handleSelect(opt)} disabled={revealed}
+              className={`w-full text-left px-4 py-3.5 rounded-xl border-2 text-sm min-h-[44px] transition-all active:scale-[0.98]
+                ${!revealed
+                  ? isMine ? 'border-blue-500 bg-blue-50' : 'border-gray-100 bg-white hover:border-gray-300'
+                  : isCorrect ? 'border-green-500 bg-green-50 text-green-900'
+                  : isMine   ? 'border-red-400 bg-red-50 text-red-700'
+                  : 'border-gray-100 bg-white text-gray-400'
+                }`}>
+              {opt}
+              {revealed && isCorrect && <span className="ml-2 text-green-600 text-xs">✓</span>}
+              {revealed && isMine && !isCorrect && <span className="ml-2 text-red-500 text-xs">✗</span>}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* 揭晓后解析 */}
+      {revealed && (
+        <div className="space-y-2 mb-4">
+          {timedMode && timeSpent > 0 && (
+            <div className={`rounded-xl p-3 text-sm border ${timeSpent > timedLimit ? 'bg-red-50 border-red-200 text-red-600' : 'bg-green-50 border-green-200 text-green-600'}`}>
+              用时 {timeSpent}s · 限时 {timedLimit}s
+              {timeSpent > timedLimit ? ' · 超时了，需要继续提速' : ' · 达标！'}
+            </div>
+          )}
+          {current.question.sharedAiAnalysis && (
+            <div className="bg-white rounded-xl border border-gray-100 p-3">
+              <p className="text-xs text-gray-400 mb-1">解析</p>
+              <p className="text-sm text-gray-700">{current.question.sharedAiAnalysis}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {revealed && (
+        <button onClick={handleNext}
+          className="fixed bottom-20 left-4 right-4 max-w-lg mx-auto py-4 bg-blue-600 text-white font-bold rounded-2xl">
+          {idx >= items.length - 1 ? '完成 ✓' : '下一题 →'}
+        </button>
+      )}
+    </div>
+  )
+}
