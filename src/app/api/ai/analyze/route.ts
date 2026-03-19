@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { z } from 'zod'
-import { callAIJson } from '@/lib/ai/provider'
+import { callAI } from '@/lib/ai/provider'
 import { rateLimit, AI_LIMIT } from '@/lib/rate-limit'
 
 const schema = z.object({

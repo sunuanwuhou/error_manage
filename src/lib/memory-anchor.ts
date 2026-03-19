@@ -3,6 +3,7 @@
 // 首次存量化触发，1句话口诀，AI调用1次永久复用
 
 import { prisma } from './prisma'
+import { callAI } from './ai/provider'
 
 async function callMiniMax(prompt: string): Promise<string> {
   const apiKey = process.env.MINIMAX_API_KEY

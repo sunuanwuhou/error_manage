@@ -30,11 +30,22 @@ export default function MockTestsPage() {
   const [records, setRecords]   = useState<MockRecord[]>([])
   const [loading, setLoading]   = useState(true)
   const [showForm, setShowForm] = useState(false)
+  const [error, setError] = useState('')
 
   function loadRecords() {
-    fetch('/api/mock-tests').then(r => r.json()).then(data => {
-      setRecords(data); setLoading(false)
-    })
+    setError('')
+    fetch('/api/mock-tests')
+      .then(async r => {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error ?? '模考记录加载失败')
+        setRecords(Array.isArray(data) ? data : [])
+        setLoading(false)
+      })
+      .catch((e: any) => {
+        setRecords([])
+        setError(e?.message ?? '模考记录加载失败')
+        setLoading(false)
+      })
   }
 
   useEffect(() => { loadRecords() }, [])
@@ -78,6 +89,10 @@ export default function MockTestsPage() {
       {loading ? (
         <div className="space-y-3">
           {[1,2,3].map(i => <div key={i} className="h-28 bg-gray-100 rounded-2xl animate-pulse" />)}
+        </div>
+      ) : error ? (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-sm text-red-600">
+          {error}
         </div>
       ) : records.length === 0 ? (
         <div className="text-center py-16 text-gray-400">
@@ -147,6 +162,7 @@ export default function MockTestsPage() {
 // ─── 录入弹窗 ───────────────────────────────────────────────
 function NewMockTestModal({ onClose }: { onClose: () => void }) {
   const SECTIONS = ['资料分析', '判断推理', '言语理解', '数量关系', '常识判断']
+  const [showMeta, setShowMeta] = useState(false)
   const [form, setForm] = useState({
     sourceName:    '',
     examType:      'guo_kao',
@@ -158,6 +174,16 @@ function NewMockTestModal({ onClose }: { onClose: () => void }) {
   const [scores, setScores]   = useState<Record<string, string>>({})
   const [saving, setSaving]   = useState(false)
   const [error, setError]     = useState('')
+
+  useEffect(() => {
+    fetch('/api/onboarding')
+      .then(async res => {
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) return
+        setForm(current => ({ ...current, examType: data.examType || current.examType }))
+      })
+      .catch(() => {})
+  }, [])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -189,6 +215,38 @@ function NewMockTestModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-gray-800">模考来源</p>
+                <p className="text-xs text-gray-400 mt-1">
+                  默认按 {form.examType === 'guo_kao' ? '国考' : form.examType === 'sheng_kao' ? '省考' : '统考'} 记录
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMeta(v => !v)}
+                className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600"
+              >
+                {showMeta ? '收起' : '修改'}
+              </button>
+            </div>
+            {showMeta && (
+              <div className="mt-3">
+                <label className="block text-xs font-medium text-gray-500 mb-1">考试类型</label>
+                <select
+                  value={form.examType}
+                  onChange={e => setForm(f => ({ ...f, examType: e.target.value }))}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                >
+                  <option value="guo_kao">国考</option>
+                  <option value="sheng_kao">省考</option>
+                  <option value="tong_kao">统考</option>
+                </select>
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">来源名称 *</label>
             <input value={form.sourceName} onChange={e => setForm(f => ({ ...f, sourceName: e.target.value }))}

@@ -8,7 +8,9 @@
 ### 前置要求
 - Node.js 18+
 - PostgreSQL 15+
-- cloudflared（`brew install cloudflared`，手机访问用）
+- `cloudflared` 可选。
+  - 已安装时优先复用系统命令
+  - 未安装时，管理员页的 Tunnel 按钮会在支持平台上自动下载官方二进制到项目运行目录，仅用于本机测试外网访问
 
 ### 启动步骤
 
@@ -35,12 +37,47 @@ npm run dev
 # 访问 http://localhost:3000
 ```
 
+### E2E 冒烟测试
+
+```bash
+# 1. 安装 Playwright 浏览器
+npm run test:e2e:install
+
+# 2. 跑冒烟测试
+npm run test:e2e
+
+# 可选：复用已有服务
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:3000 npm run test:e2e
+```
+
+测试文件统一放在 `tests/e2e/`，当前先提供登录页和根路由的最小烟雾覆盖，后续主流程测试由并行 agent 继续补充。
+
 ### 首次登录流程
 1. `admin / changeme123` 登录
 2. 完成3步设置向导（考试类型 → 目标分 → 每日目标）
 3. 进入管理员页面 → 点击"启动 Cloudflare Tunnel"→ 复制域名发手机
 4. 录题：错题本 → + 单题 / 批量录
 5. 首页看今日任务 → 开始练习
+
+### 本地外网访问
+
+如果你只是想把本机开发环境临时暴露给手机或同事测试，直接用项目内置 Tunnel 即可：
+
+1. 启动本地服务
+
+```bash
+npm run dev
+```
+
+2. 管理员登录后，进入“管理员页面”
+3. 点击顶部 `Cloudflare Tunnel` 的“启动”
+4. 等待出现 `trycloudflare.com` 地址，复制后即可外网访问
+
+补充说明：
+- 如果机器上没有安装 `cloudflared`，项目会在支持平台上自动下载官方二进制到 `.runtime/cloudflared/`
+- 这个地址是临时的，每次重启都可能变化，只适合测试
+- 如果需要“外网打开后还能正常登录”，请把 `.env.local` 里的 `NEXTAUTH_URL` 改成当前 Tunnel 地址后重启 `npm run dev`
+- 若想手动安装，Mac 仍推荐：`brew install cloudflared`
 
 ---
 

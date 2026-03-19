@@ -6,6 +6,23 @@ import CredentialsProvider from 'next-auth/providers/credentials'
 import bcrypt from 'bcryptjs'
 import { prisma } from './prisma'
 
+async function hydrateTokenFromUsername(token: Record<string, any>) {
+  const username = typeof token.name === 'string' ? token.name : null
+  if (!username) return token
+
+  const user = await prisma.user.findUnique({
+    where: { username },
+    select: { id: true, role: true, examType: true },
+  })
+
+  if (!user) return token
+
+  token.id = user.id
+  token.role = user.role
+  token.examType = user.examType
+  return token
+}
+
 export const authOptions: NextAuthOptions = {
   session: { strategy: 'jwt' },
   providers: [
@@ -49,8 +66,13 @@ export const authOptions: NextAuthOptions = {
         token.id       = user.id
         token.role     = (user as any).role
         token.examType = (user as any).examType
+        return token
       }
-      return token
+
+      // Local DB resets can invalidate the stored userId in an old browser session.
+      // Rehydrate from username so existing sessions recover instead of failing with
+      // "No User found" / update-not-found errors across onboarding and app routes.
+      return hydrateTokenFromUsername(token)
     },
     async session({ session, token }) {
       if (session.user) {

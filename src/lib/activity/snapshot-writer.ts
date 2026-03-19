@@ -43,6 +43,19 @@ export interface SnapshotInput {
   dataPointsUsed:  number
 }
 
+function inferInsightCategory(rec: Recommendation) {
+  if (rec.paramKey === 'daily_task_strategy' || rec.action === 'change_strategy') {
+    return 'task_strategy'
+  }
+  if (rec.paramKey?.startsWith('interval_sequence') || rec.action === 'adjust_interval') {
+    return 'interval_optimization'
+  }
+  if (rec.paramKey?.startsWith('error_roi') || rec.action === 'adjust_roi_weight') {
+    return 'roi_weight_optimization'
+  }
+  return rec.action || 'general_optimization'
+}
+
 export async function writeAnalysisSnapshot(input: SnapshotInput): Promise<string> {
   // 1. 写入 AnalysisSnapshot
   const snapshot = await prisma.$queryRawUnsafe<Array<{ id: string }>>(`
@@ -91,7 +104,7 @@ export async function writeAnalysisSnapshot(input: SnapshotInput): Promise<strin
     `,
       input.userId ?? null,
       snapshotId,
-      'interval_optimization',
+      inferInsightCategory(rec),
       rec.target,
       rec.target,
       rec.paramKey,

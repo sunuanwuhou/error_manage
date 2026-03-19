@@ -7,6 +7,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { parsePdfText } from '@/lib/parsers/pdf-parser'
 import { parseExcelBuffer } from '@/lib/parsers/excel-parser'
+import { parseDocxBuffer } from '@/lib/parsers/docx-parser'
 
 const MAX_SIZE = 20 * 1024 * 1024  // 20MB
 
@@ -45,8 +46,14 @@ export async function POST(req: NextRequest) {
       questions    = result.questions
       warnings     = result.warnings
       warnings.unshift(`Sheet: ${result.sheetName}，共 ${questions.length} 行`)
+    } else if (filename.endsWith('.docx')) {
+      // ---- DOCX 解析 ----
+      const result = await parseDocxBuffer(buffer)
+      questions    = result.questions
+      warnings     = result.warnings
+      warnings.unshift(`DOCX 共解析到 ${questions.length} 道题`)
     } else {
-      return NextResponse.json({ error: '不支持的文件格式，请上传 PDF、Excel(.xlsx/.xls) 或 CSV' }, { status: 400 })
+      return NextResponse.json({ error: '不支持的文件格式，请上传 PDF、DOCX、Excel(.xlsx/.xls) 或 CSV' }, { status: 400 })
     }
   } catch (err: any) {
     return NextResponse.json({ error: `解析失败：${err.message}` }, { status: 500 })
@@ -58,10 +65,13 @@ export async function POST(req: NextRequest) {
 
   // 返回预览（前50题），完整数据 base64 存到响应里供确认接口用
   // 注意：不存数据库，让用户先预览确认
-  const preview = questions.slice(0, 50).map((q, i) => ({
-    index:    i,
+  const indexedQuestions = questions.map((q, i) => ({ ...q, index: i }))
+
+  const preview = indexedQuestions.slice(0, 50).map((q) => ({
+    index:    q.index,
     no:       q.no,
     content:  q.content.slice(0, 120) + (q.content.length > 120 ? '...' : ''),
+    questionImage: q.questionImage,
     options:  q.options,
     answer:   q.answer,
     type:     q.type,
@@ -74,7 +84,7 @@ export async function POST(req: NextRequest) {
     warnings,
     // 完整数据 base64，提交确认时回传（避免存 session/DB）
     payload:  Buffer.from(JSON.stringify(
-      questions.map(q => ({ ...q, examType, srcName }))
+      indexedQuestions.map(q => ({ ...q, examType, srcName, srcOrigin: 'file_import' }))
     )).toString('base64'),
   })
 }

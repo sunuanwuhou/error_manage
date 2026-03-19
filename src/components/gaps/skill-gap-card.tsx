@@ -23,12 +23,30 @@ interface GapData {
 export function SkillGapCard({ compact = false }: { compact?: boolean }) {
   const [data, setData]     = useState<GapData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch('/api/analysis/gaps').then(r => r.json()).then(d => { setData(d); setLoading(false) })
+    fetch('/api/analysis/gaps')
+      .then(async r => {
+        const d = await r.json()
+        if (!r.ok) throw new Error(d.error ?? '盲区分析加载失败')
+        setData(d)
+        setLoading(false)
+      })
+      .catch((e: any) => {
+        setError(e?.message ?? '盲区分析加载失败')
+        setLoading(false)
+      })
   }, [])
 
   if (loading) return <div className="h-24 bg-gray-100 rounded-2xl animate-pulse mb-4" />
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-4 text-sm text-red-600">
+        {error}
+      </div>
+    )
+  }
   if (!data || data.gaps.length === 0) return null
 
   const topGaps = data.gaps.slice(0, compact ? 3 : 5)
@@ -71,9 +89,9 @@ export function SkillGapCard({ compact = false }: { compact?: boolean }) {
                 <span className="text-xs text-gray-400">历年出现率 {gap.freqPct}%</span>
               </div>
             </div>
-            <Link href={`/practice?type=${encodeURIComponent(gap.skillTag)}`}
+            <Link href={`/search?type=${encodeURIComponent(gap.sectionType)}&q=${encodeURIComponent(gap.skillTag)}`}
               className="flex-shrink-0 text-xs bg-amber-500 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-amber-600 transition-colors">
-              去练
+              去题库搜
             </Link>
           </div>
         ))}

@@ -25,6 +25,8 @@ export default function AdminUsersPage() {
   const [users, setUsers]     = useState<AdminUser[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
 
   // 权限检查
   const role = (session?.user as any)?.role
@@ -33,19 +35,36 @@ export default function AdminUsersPage() {
   }, [session, role, router])
 
   function loadUsers() {
+    setError('')
     fetch('/api/admin/users')
-      .then(r => r.json())
-      .then(data => { setUsers(data); setLoading(false) })
+      .then(async r => {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error ?? '账号列表加载失败')
+        setUsers(Array.isArray(data) ? data : [])
+        setLoading(false)
+      })
+      .catch((e: any) => {
+        setUsers([])
+        setError(e?.message ?? '账号列表加载失败')
+        setLoading(false)
+      })
   }
 
   useEffect(() => { loadUsers() }, [])
 
   async function toggleActive(userId: string) {
-    await fetch('/api/admin/users', {
+    setMessage('')
+    const res = await fetch('/api/admin/users', {
       method:  'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ userId, action: 'toggle_active' }),
     })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setError(data.error ?? '状态切换失败')
+      return
+    }
+    setMessage('账号状态已更新')
     loadUsers()
   }
 
@@ -70,8 +89,17 @@ export default function AdminUsersPage() {
         <div className="space-y-3">
           {[1,2,3].map(i => <div key={i} className="h-20 bg-gray-100 rounded-2xl animate-pulse" />)}
         </div>
+      ) : error ? (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-sm text-red-600">
+          {error}
+        </div>
       ) : (
         <div className="space-y-3">
+          {message && (
+            <div className="bg-green-50 border border-green-200 rounded-2xl p-4 text-sm text-green-700">
+              {message}
+            </div>
+          )}
           {users.map(u => {
             const expired = new Date(u.passwordExpireAt) < now
             const expireSoon = !expired && (new Date(u.passwordExpireAt).getTime() - now.getTime()) < 7 * 86400000

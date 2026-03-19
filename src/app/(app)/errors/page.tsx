@@ -17,6 +17,7 @@ interface ErrorItem {
   question: {
     id: string
     content: string
+    questionImage?: string | null
     type: string
     subtype?: string
     answer: string
@@ -152,6 +153,13 @@ export default function ErrorsPage() {
                 </div>
 
                 {/* 题目预览 */}
+                {item.question.questionImage && (
+                  <img
+                    src={item.question.questionImage}
+                    alt="题目图片"
+                    className="mb-2 w-full rounded-xl border border-gray-100"
+                  />
+                )}
                 <p className="text-sm text-gray-700 line-clamp-2 mb-2">
                   {item.question.content}
                 </p>
@@ -162,6 +170,19 @@ export default function ErrorsPage() {
                   {item.errorReason && (
                     <span className="truncate max-w-[180px]">原因：{item.errorReason}</span>
                   )}
+                </div>
+                <div className="mt-3 flex justify-end">
+                  <Link
+                    href={`/notes?draft=1&draftKind=notes&draftType=${encodeURIComponent(item.question.type)}&draftSubtype=${encodeURIComponent('错题复盘')}&draftTitle=${encodeURIComponent(`${item.question.type}${item.question.subtype ? ` · ${item.question.subtype}` : ''}复盘`)}&draftContent=${encodeURIComponent([
+                      `题目：${item.question.content.slice(0, 80)}`,
+                      item.errorReason ? `这次错因：${item.errorReason}` : '',
+                      `当前掌握度：${item.masteryPercent}%`,
+                      isOverdue ? '状态：已到复习时间' : '',
+                    ].filter(Boolean).join('\n'))}`}
+                    className="text-xs text-purple-600"
+                  >
+                    沉淀成笔记
+                  </Link>
                 </div>
               </div>
             )

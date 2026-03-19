@@ -21,12 +21,26 @@ interface PatternsData {
 export function ErrorPatternsCard() {
   const [data, setData]     = useState<PatternsData | null>(null)
   const [expanded, setExpanded] = useState<number | null>(null)
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch('/api/error-patterns').then(r => r.json()).then(setData)
+    fetch('/api/error-patterns')
+      .then(async r => {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error ?? '错误分析加载失败')
+        setData(data)
+      })
+      .catch((e: any) => setError(e?.message ?? '错误分析加载失败'))
   }, [])
 
   if (!data) return <div className="h-24 bg-gray-100 rounded-2xl animate-pulse mb-4" />
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-4 text-sm text-red-600">
+        {error}
+      </div>
+    )
+  }
 
   if (data.insufficient) {
     return (

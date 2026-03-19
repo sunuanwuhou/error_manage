@@ -3,7 +3,7 @@ import React from 'react'
 // src/app/(app)/errors/new/page.tsx
 // 手动录题（P1）
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 const QUESTION_TYPES = ['判断推理', '言语理解', '数量关系', '资料分析', '常识判断']
@@ -19,24 +19,31 @@ export default function NewErrorPage() {
   const router = useRouter()
   const [submitting, setSubmitting] = useState(false)
   const [ocrLoading, setOcrLoading]   = useState(false)
+  const [showSourceMeta, setShowSourceMeta] = useState(false)
   const imgRef = React.useRef<HTMLInputElement>(null)
 
   async function handleOcr(file: File) {
     setOcrLoading(true)
-    const form = new FormData(); form.append('image', file)
-    const res  = await fetch('/api/ai/ocr', { method: 'POST', body: form })
-    const data = await res.json()
-    setOcrLoading(false)
-    if (data.error) { setError(data.error); return }
-    if (data.content) set('content', data.content)
-    if (data.answer)  set('answer', data.answer)
-    if (data.type)    set('type', data.type)
-    if (data.analysis) set('analysis', data.analysis)
-    if (Array.isArray(data.options)) {
-      data.options.forEach((opt: string, i: number) => {
-        const letter = ['A','B','C','D'][i]
-        if (letter) set('option'+letter, opt.replace(/^[A-D][\.、]/,'').trim())
-      })
+    setError('')
+    try {
+      const form = new FormData(); form.append('image', file)
+      const res  = await fetch('/api/ai/ocr', { method: 'POST', body: form })
+      const data = await res.json()
+      if (!res.ok || data.error) { setError(data.error ?? '识别失败'); return }
+      if (data.content) set('content', data.content)
+      if (data.answer)  set('answer', data.answer)
+      if (data.type)    set('type', data.type)
+      if (data.analysis) set('analysis', data.analysis)
+      if (Array.isArray(data.options)) {
+        data.options.forEach((opt: string, i: number) => {
+          const letter = ['A','B','C','D'][i]
+          if (letter) set('option'+letter, opt.replace(/^[A-D][\.、]/,'').trim())
+        })
+      }
+    } catch (err: any) {
+      setError(err.message ?? '识别失败')
+    } finally {
+      setOcrLoading(false)
     }
   }
   const [error, setError]           = useState('')
@@ -57,6 +64,19 @@ export default function NewErrorPage() {
     srcYear:     '',
     srcOrigin:   '',
   })
+
+  useEffect(() => {
+    fetch('/api/onboarding')
+      .then(async res => {
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) return
+        setForm(current => ({
+          ...current,
+          examType: data.examType || current.examType,
+        }))
+      })
+      .catch(() => {})
+  }, [])
 
   function set(field: string, value: string) {
     setForm(f => ({ ...f, [field]: value }))
@@ -247,31 +267,61 @@ export default function NewErrorPage() {
           />
         </div>
 
-        {/* 来源信息（可选） */}
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">年份</label>
-            <input
-              type="text"
-              value={form.srcYear}
-              onChange={e => set('srcYear', e.target.value)}
-              placeholder="如 2024"
-              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">考试来源</label>
-            <select
-              value={form.examType}
-              onChange={e => set('examType', e.target.value)}
-              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+        <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-gray-700">来源信息</p>
+              <p className="text-xs text-gray-500 mt-1">
+                默认按 {form.examType === 'guo_kao' ? '国考' : form.examType === 'sheng_kao' ? '省考' : form.examType === 'tong_kao' ? '统考' : '通用'} 保存
+                {form.srcYear ? ` · ${form.srcYear}` : ''}
+                {form.srcOrigin ? ` · ${form.srcOrigin}` : ''}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowSourceMeta(v => !v)}
+              className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600"
             >
-              <option value="guo_kao">国考</option>
-              <option value="sheng_kao">省考</option>
-              <option value="tong_kao">统考</option>
-              <option value="common">通用</option>
-            </select>
+              {showSourceMeta ? '收起' : '修改'}
+            </button>
           </div>
+          {showSourceMeta && (
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">年份</label>
+                <input
+                  type="text"
+                  value={form.srcYear}
+                  onChange={e => set('srcYear', e.target.value)}
+                  placeholder="如 2024"
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">考试来源</label>
+                <select
+                  value={form.examType}
+                  onChange={e => set('examType', e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                >
+                  <option value="guo_kao">国考</option>
+                  <option value="sheng_kao">省考</option>
+                  <option value="tong_kao">统考</option>
+                  <option value="common">通用</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">来源名称</label>
+                <input
+                  type="text"
+                  value={form.srcOrigin}
+                  onChange={e => set('srcOrigin', e.target.value)}
+                  placeholder="如：2024年国考行测"
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                />
+              </div>
+            </div>
+          )}
         </div>
 
         {error && (

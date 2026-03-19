@@ -6,10 +6,10 @@ import { useSession } from 'next-auth/react'
 const tabs = [
   { href: '/dashboard', label: '今日',  icon: '📋' },
   { href: '/practice',  label: '练习',  icon: '✏️' },
+  { href: '/papers',    label: '套卷',  icon: '📚' },
   { href: '/errors',    label: '错题本', icon: '📕' },
-  { href: '/notes',     label: '笔记',  icon: '📝' },
-  { href: '/knowledge',  label: '知识库', icon: '🧪' },
   { href: '/stats',     label: '进度',  icon: '📊' },
+  { href: '/settings',  label: '设置',  icon: '⚙️' },
 ]
 
 export function Navbar() {
@@ -17,14 +17,10 @@ export function Navbar() {
   const { data: session } = useSession()
   const isAdmin = (session?.user as any)?.role === 'admin'
 
-  const allTabs = isAdmin
-    ? [...tabs, { href: '/admin/users', label: '管理', icon: '👤' }]
-    : tabs
-
   return (
     <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 pb-safe z-50">
       <div className="flex max-w-lg mx-auto">
-        {allTabs.map(tab => {
+        {tabs.map(tab => {
           const active = pathname.startsWith(tab.href)
           return (
             <Link key={tab.href} href={tab.href}

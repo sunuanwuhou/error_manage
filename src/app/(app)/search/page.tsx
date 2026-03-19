@@ -2,7 +2,7 @@
 // src/app/(app)/search/page.tsx — 题目搜索（B5）
 
 import { useState, useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 
 interface SearchResult {
   id: string; content: string; type: string; subtype?: string
@@ -11,28 +11,43 @@ interface SearchResult {
 
 export default function SearchPage() {
   const router    = useRouter()
+  const searchParams = useSearchParams()
   const inputRef  = useRef<HTMLInputElement>(null)
-  const [q, setQ]             = useState('')
-  const [type, setType]       = useState('')
+  const [q, setQ]             = useState(searchParams.get('q') ?? '')
+  const [type, setType]       = useState(searchParams.get('type') ?? '')
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
+  const [error, setError]     = useState('')
   const timerRef = useRef<NodeJS.Timeout>()
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
   useEffect(() => {
+    setQ(searchParams.get('q') ?? '')
+    setType(searchParams.get('type') ?? '')
+  }, [searchParams])
+
+  useEffect(() => {
     clearTimeout(timerRef.current)
-    if (!q.trim() && !type) { setResults([]); return }
+    if (!q.trim() && !type) { setResults([]); setError(''); return }
     timerRef.current = setTimeout(async () => {
       setLoading(true)
+      setError('')
       const params = new URLSearchParams()
       if (q.trim()) params.set('q', q.trim())
       if (type)     params.set('type', type)
       params.set('limit', '30')
-      const res  = await fetch(`/api/questions?${params}`)
-      const data = await res.json()
-      setResults(Array.isArray(data) ? data : [])
-      setLoading(false)
+      try {
+        const res  = await fetch(`/api/questions?${params}`)
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error ?? '搜索失败')
+        setResults(Array.isArray(data) ? data : [])
+      } catch (e: any) {
+        setResults([])
+        setError(e?.message ?? '搜索失败')
+      } finally {
+        setLoading(false)
+      }
     }, 300)
   }, [q, type])
 
@@ -43,7 +58,10 @@ export default function SearchPage() {
     })
     if (res.ok || res.status === 409) {
       router.push('/errors')
+      return
     }
+    const data = await res.json().catch(() => ({}))
+    setError(data.error ?? '加入错题本失败')
   }
 
   return (
@@ -74,7 +92,13 @@ export default function SearchPage() {
 
       {loading && <div className="text-center py-8 text-gray-400 text-sm">搜索中...</div>}
 
-      {!loading && results.length === 0 && (q || type) && (
+      {!loading && error && (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && results.length === 0 && (q || type) && (
         <div className="text-center py-12 text-gray-400">
           <p className="text-3xl mb-2">🔍</p>
           <p className="text-sm">没有找到匹配的题目</p>

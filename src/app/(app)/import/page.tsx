@@ -3,15 +3,17 @@
 // 真题导入：PDF / Excel / CSV
 // 流程：上传 → 解析预览 → 勾选题目 → 确认入库
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
 type Step = 'upload' | 'preview' | 'done'
+type DuplicateMode = 'skip' | 'replace_low_quality' | 'force_replace'
 
 interface PreviewItem {
   index:      number
   no:         string
   content:    string
+  questionImage?: string
   options:    string[]
   answer:     string
   type:       string
@@ -25,11 +27,28 @@ interface ParseResult {
   payload:  string
 }
 
+interface PayloadQuestion {
+  index: number
+  no: string
+  content: string
+  questionImage?: string
+  options: string[]
+  answer: string
+  type: string
+  analysis?: string
+  examType: string
+  srcName: string
+}
+
 interface ImportResult {
   imported:     number
   skipped:      number
+  overwritten:  number
   addedToErrors: number
+  lowQuality:   number
   total:        number
+  typeBreakdown: Record<string, number>
+  qualityReport: Array<{ no: string; score: number; issues: string[] }>
 }
 
 const EXAM_TYPES = [
@@ -38,6 +57,46 @@ const EXAM_TYPES = [
   { value: 'tong_kao',  label: '统考' },
   { value: 'common',    label: '通用' },
 ]
+
+const IMPORT_PREFS_KEY = 'pref_import_settings_v2'
+const PROVINCES = [
+  '北京', '天津', '上海', '重庆', '河北', '河南', '云南', '辽宁', '黑龙江', '湖南',
+  '安徽', '山东', '新疆', '江苏', '浙江', '江西', '湖北', '广西', '甘肃', '山西',
+  '内蒙古', '陕西', '吉林', '福建', '贵州', '广东', '青海', '西藏', '四川', '宁夏',
+  '海南',
+]
+
+function inferImportMeta(fileName: string) {
+  const baseName = fileName.replace(/\.[^.]+$/, '').trim()
+  const yearMatch = baseName.match(/\b(20\d{2})\b|((?:20\d{2})年)/)
+  const year = yearMatch?.[1] ?? yearMatch?.[2]?.replace('年', '') ?? ''
+
+  let inferredExamType = ''
+  if (/国考|国家公务员/.test(baseName)) inferredExamType = 'guo_kao'
+  else if (/联考|统考/.test(baseName)) inferredExamType = 'tong_kao'
+  else if (/省考/.test(baseName)) inferredExamType = 'sheng_kao'
+
+  const province = PROVINCES.find(name => baseName.includes(name)) ?? ''
+
+  return {
+    srcName: baseName,
+    srcYear: year,
+    examType: inferredExamType,
+    srcProvince: province,
+  }
+}
+
+function decodePayload(payload: string): PayloadQuestion[] {
+  const binary = atob(payload)
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0))
+  return JSON.parse(new TextDecoder().decode(bytes))
+}
+
+function encodePayload(questions: PayloadQuestion[]) {
+  const bytes = new TextEncoder().encode(JSON.stringify(questions))
+  const binary = Array.from(bytes, byte => String.fromCharCode(byte)).join('')
+  return btoa(binary)
+}
 
 export default function ImportPage() {
   const router      = useRouter()
@@ -56,13 +115,59 @@ export default function ImportPage() {
   // 解析结果
   const [result, setResult]       = useState<ParseResult | null>(null)
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
-  const [importResult, setImportResult] = useState<any>(null)
   const [selected, setSelected]   = useState<Set<number>>(new Set())
   const [addErrors, setAddErrors] = useState<Set<number>>(new Set())
   const [confirming, setConfirming] = useState(false)
+  const [showImportSettings, setShowImportSettings] = useState(false)
+  const [showPreviewMeta, setShowPreviewMeta] = useState(false)
+  const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>('skip')
 
   // 完成结果
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [prefsLoaded, setPrefsLoaded] = useState(false)
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(IMPORT_PREFS_KEY)
+      if (!raw) {
+        setPrefsLoaded(true)
+        return
+      }
+      const saved = JSON.parse(raw) as {
+        srcName?: string
+        srcYear?: string
+        srcProvince?: string
+      }
+      if (saved.srcName) setSrcName(saved.srcName)
+      if (saved.srcYear) setSrcYear(saved.srcYear)
+      if (saved.srcProvince) setSrcProvince(saved.srcProvince)
+    } catch {}
+    finally {
+      setPrefsLoaded(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetch('/api/onboarding')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return
+        setExamType(data.examType || 'guo_kao')
+        setSrcProvince(current => current || data.targetProvince || '')
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!prefsLoaded) return
+    try {
+      localStorage.setItem(IMPORT_PREFS_KEY, JSON.stringify({
+        srcName,
+        srcYear,
+        srcProvince,
+      }))
+    } catch {}
+  }, [prefsLoaded, srcName, srcYear, srcProvince])
 
   // ---- 文件处理 ----
   async function handleFile(file: File) {
@@ -70,18 +175,32 @@ export default function ImportPage() {
     setUploading(true)
     setUploadError('')
 
+    const inferred = inferImportMeta(file.name)
+    const effectiveExamType = examType || inferred.examType || 'guo_kao'
+    const effectiveSrcName = srcName.trim() || inferred.srcName
+    if (!srcName.trim() && inferred.srcName) setSrcName(inferred.srcName)
+    if (!srcYear.trim() && inferred.srcYear) setSrcYear(inferred.srcYear)
+    if (!srcProvince.trim() && inferred.srcProvince) setSrcProvince(inferred.srcProvince)
+    if (examType === 'guo_kao' && inferred.examType && inferred.examType !== examType) setExamType(inferred.examType)
+
     const form = new FormData()
     form.append('file',     file)
-    form.append('examType', examType)
-    form.append('srcName',  srcName)
+    form.append('examType', effectiveExamType)
+    form.append('srcName',  effectiveSrcName)
 
     try {
       const res  = await fetch('/api/import/upload', { method: 'POST', body: form })
-      const data = await res.json()
+      const text = await res.text()
+      let data: any
+      try {
+        data = text ? JSON.parse(text) : {}
+      } catch {
+        throw new Error(`解析接口返回异常（HTTP ${res.status}）`)
+      }
       if (!res.ok) { setUploadError(data.error ?? '上传失败'); return }
       setResult(data)
-      // 默认全选
-      setSelected(new Set(data.preview.map((p: PreviewItem) => p.index)))
+      // 默认选中整份文件，而不是只选预览区前 50 题
+      setSelected(new Set(Array.from({ length: data.total }, (_, i) => i)))
       setStep('preview')
     } catch (e: any) {
       setUploadError(e.message)
@@ -90,11 +209,11 @@ export default function ImportPage() {
     }
   }
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault(); setDragging(false)
     const file = e.dataTransfer.files[0]
     if (file) handleFile(file)
-  }, [examType, srcName])
+  }
 
   // ---- 确认入库 ----
   async function handleConfirm() {
@@ -109,12 +228,18 @@ export default function ImportPage() {
         srcYear:     srcYear || undefined,
         srcProvince: srcProvince || undefined,
         srcSession:  srcName || undefined,
+        duplicateMode,
         addToErrors: Array.from(addErrors),
+        selected:    Array.from(selected),
       }),
     })
     const data = await res.json()
     setImportResult(data)
     setConfirming(false)
+    if (!res.ok) {
+      setUploadError(data.error ?? '导入失败')
+      return
+    }
     setStep('done')
   }
 
@@ -132,8 +257,9 @@ export default function ImportPage() {
           {[
             { label: '新入库题目', value: importResult?.imported ?? 0,     color: 'text-blue-600' },
             { label: '重复跳过',  value: importResult?.skipped ?? 0,       color: 'text-gray-400' },
+            { label: '覆盖更新',  value: importResult?.overwritten ?? 0,   color: 'text-violet-600' },
             { label: '低质量跳过', value: importResult?.lowQuality ?? 0,   color: 'text-amber-500' },
-            { label: '加入待练队列', value: importResult?.imported ?? 0,   color: 'text-green-600' },
+            { label: '加入待练队列', value: (importResult?.imported ?? 0) + (importResult?.overwritten ?? 0),   color: 'text-green-600' },
           ].map(item => (
             <div key={item.label} className="flex justify-between">
               <span className="text-gray-500">{item.label}</span>
@@ -185,7 +311,7 @@ export default function ImportPage() {
         )}
 
         <p className="text-xs text-gray-400 text-center mb-5">
-          导入的题目已加入今日练习队列，打开首页即可练习
+          导入的题目已加入真题练习队列，打开首页即可开始练习
         </p>
         <div className="flex gap-3">
           <button onClick={() => { setStep('upload'); setResult(null); setImportResult(null) }}
@@ -203,13 +329,26 @@ export default function ImportPage() {
 
   // ---- 预览确认页 ----
   if (step === 'preview' && result) {
-    const allSelected = selected.size === result.preview.length
+    const allSelected = result.preview.every(item => selected.has(item.index))
 
     function handleEditItem(idx: number, field: string, value: string) {
-      setResult(r => r ? {
-        ...r,
-        preview: r.preview.map((p, i) => i === idx ? { ...p, [field]: value } : p)
-      } : r)
+      setResult(current => {
+        if (!current) return current
+
+        const nextPreview = current.preview.map(item =>
+          item.index === idx ? { ...item, [field]: value } : item
+        )
+
+        const payloadQuestions = decodePayload(current.payload).map(question =>
+          question.index === idx ? { ...question, [field]: value } : question
+        )
+
+        return {
+          ...current,
+          preview: nextPreview,
+          payload: encodePayload(payloadQuestions),
+        }
+      })
     }
     return (
       <div className="max-w-2xl mx-auto px-4 pt-4 pb-32">
@@ -232,22 +371,74 @@ export default function ImportPage() {
 
         {/* 来源补充 */}
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
-          <p className="text-xs font-medium text-gray-500 mb-2">补充来源信息（可选）</p>
-          <div className="grid grid-cols-2 gap-2">
-            <input value={srcYear} onChange={e => setSrcYear(e.target.value)}
-              placeholder="年份，如 2024"
-              className="px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
-            <input value={srcProvince} onChange={e => setSrcProvince(e.target.value)}
-              placeholder="省份（省考填）"
-              className="px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium text-gray-500 mb-1">识别有误时修改</p>
+              <p className="text-sm text-gray-700">
+                {[
+                  srcYear ? `年份 ${srcYear}` : '年份自动识别',
+                  srcProvince ? `省份 ${srcProvince}` : '省份自动识别',
+                ].join(' · ')}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowPreviewMeta(v => !v)}
+              className="flex-shrink-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600"
+            >
+              {showPreviewMeta ? '收起' : '修改'}
+            </button>
+          </div>
+          {showPreviewMeta && (
+            <div className="grid grid-cols-2 gap-2 mt-4">
+              <input value={srcYear} onChange={e => setSrcYear(e.target.value)}
+                placeholder="年份，如 2024"
+                className="px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              <input value={srcProvince} onChange={e => setSrcProvince(e.target.value)}
+                placeholder="省份（省考填）"
+                className="px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+          <p className="text-xs font-medium text-gray-500 mb-2">发现重复时</p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {[
+              { value: 'skip', label: '跳过', desc: '保留旧题，重复题不动。' },
+              { value: 'replace_low_quality', label: '覆盖低质量旧题', desc: '只在新结果明显更完整时更新。' },
+              { value: 'force_replace', label: '强制覆盖', desc: '只要重复就用新结果替换旧题。' },
+            ].map(item => (
+              <button
+                key={item.value}
+                type="button"
+                onClick={() => setDuplicateMode(item.value as DuplicateMode)}
+                className={`rounded-2xl border px-3 py-3 text-left transition-colors ${
+                  duplicateMode === item.value
+                    ? 'border-blue-500 bg-blue-50'
+                    : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}
+              >
+                <p className={`text-sm font-medium ${duplicateMode === item.value ? 'text-blue-700' : 'text-gray-700'}`}>{item.label}</p>
+                <p className="mt-1 text-xs text-gray-400">{item.desc}</p>
+              </button>
+            ))}
           </div>
         </div>
 
         {/* 全选 / 加入错题本 */}
         <div className="flex items-center justify-between mb-3">
-          <button onClick={() => setSelected(allSelected ? new Set() : new Set(result.preview.map(p => p.index)))}
+          <button onClick={() => setSelected(s => {
+            const next = new Set(s)
+            if (allSelected) {
+              result.preview.forEach(item => next.delete(item.index))
+            } else {
+              result.preview.forEach(item => next.add(item.index))
+            }
+            return next
+          })}
             className="text-sm text-blue-600 underline">
-            {allSelected ? '取消全选' : '全选'}
+            {allSelected ? '取消预览区勾选' : '勾选预览区'}
           </button>
           <p className="text-xs text-gray-400">
             已选 {selected.size} 道 · 加入错题本 {addErrors.size} 道
@@ -352,23 +543,57 @@ export default function ImportPage() {
         </div>
       </div>
 
-      {/* 配置 */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4 space-y-3">
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">考试类型</label>
-            <select value={examType} onChange={e => setExamType(e.target.value)}
-              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
-              {EXAM_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-            </select>
+      <div className="bg-gray-50 rounded-2xl border border-gray-100 p-4 mb-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-gray-500 mb-1">自动识别</p>
+            <p className="text-sm text-gray-700">年份、考试类型和省份会自动从文件名和本机偏好里带入。</p>
+            <p className="text-xs text-gray-400 mt-1">
+              只有识别有误时，再展开高级选项修改。
+            </p>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">来源名称</label>
-            <input value={srcName} onChange={e => setSrcName(e.target.value)}
-              placeholder="如：2024年国考行测"
-              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowImportSettings(value => !value)}
+            className="flex-shrink-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600"
+          >
+            {showImportSettings ? '收起' : '高级选项'}
+          </button>
         </div>
+
+        {showImportSettings && (
+          <div className="mt-4 space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">考试类型</label>
+                <select value={examType} onChange={e => setExamType(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
+                  {EXAM_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">来源名称</label>
+                <input value={srcName} onChange={e => setSrcName(e.target.value)}
+                  placeholder="如：2024年国考行测"
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">年份</label>
+                <input value={srcYear} onChange={e => setSrcYear(e.target.value)}
+                  placeholder="如：2024"
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">省份</label>
+                <input value={srcProvince} onChange={e => setSrcProvince(e.target.value)}
+                  placeholder="省考时填写"
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 拖拽上传区 */}
@@ -380,7 +605,7 @@ export default function ImportPage() {
         className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-colors
           ${dragging ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'}`}
       >
-        <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls,.csv" className="hidden"
+        <input ref={fileRef} type="file" accept=".pdf,.docx,.xlsx,.xls,.csv" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
         <div className="text-4xl mb-3">{uploading ? '⏳' : '📂'}</div>
         {uploading ? (
@@ -395,7 +620,7 @@ export default function ImportPage() {
         ) : (
           <>
             <p className="font-semibold text-gray-700">点击或拖拽文件到这里</p>
-            <p className="text-sm text-gray-400 mt-1">PDF · Excel(.xlsx/.xls) · CSV · 最大 20MB</p>
+            <p className="text-sm text-gray-400 mt-1">PDF · DOCX · Excel(.xlsx/.xls) · CSV · 最大 20MB</p>
           </>
         )}
       </div>
@@ -412,6 +637,8 @@ export default function ImportPage() {
         {[
           { icon: '📄', name: 'PDF（粉笔/华图/中公）',
             desc: '自动提取题目+选项，末尾答案表自动对应。扫描版不支持（图片PDF）。' },
+          { icon: '📝', name: 'DOCX（题目文档）',
+            desc: '支持 Word 版题库文档，自动提取题目、选项和“正确答案”行。' },
           { icon: '📊', name: 'Excel / CSV',
             desc: '列名含"题目/答案/A/B/C/D"即可识别，也支持粉笔导出格式。' },
         ].map(f => (

@@ -7,6 +7,7 @@
 export interface ParsedQuestion {
   no:       string      // 题号
   content:  string      // 题目正文
+  questionImage?: string // 题目图片（如有）
   options:  string[]    // ["A.xxx", "B.xxx", "C.xxx", "D.xxx"]
   answer:   string      // 正确答案 A/B/C/D（来自答案页，可能为空）
   type:     string      // 推断的题型

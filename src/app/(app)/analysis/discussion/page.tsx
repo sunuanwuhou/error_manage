@@ -24,6 +24,24 @@ interface Discussion {
   aiResponse:     string | null
 }
 
+interface SystemInsight {
+  id: string
+  sourceSnapshotId: string | null
+  insightCategory: string
+  targetEntity: string
+  targetValue: string | null
+  paramKey: string
+  paramValueOld: string | null
+  paramValueNew: string
+  status: 'pending' | 'applied' | 'rejected'
+  appliedAt: string | null
+  rejectionReason: string | null
+  confidence: number
+  expiresAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 const TREND_CONFIG = {
   improving:  { label: '↑ 改善中', color: 'text-green-600' },
   worsening:  { label: '↓ 变差中', color: 'text-red-500' },
@@ -48,6 +66,9 @@ export default function DiscussionPage() {
   const [loading, setLoading]       = useState(true)
   const [submitting, setSubmitting] = useState<number | null>(null)
   const [aiResponses, setAiResponses] = useState<Record<number, string>>({})
+  const [systemInsights, setSystemInsights] = useState<SystemInsight[]>([])
+  const [insightSubmitting, setInsightSubmitting] = useState<string | null>(null)
+  const [pageError, setPageError] = useState('')
 
   // 当前正在操作的 finding
   const [activeIdx, setActiveIdx]   = useState<number | null>(null)
@@ -60,12 +81,23 @@ export default function DiscussionPage() {
     Promise.all([
       fetch(`/api/analysis/snapshots/${snapshotId}`).then(r => r.json()),
       fetch(`/api/analysis/discussion?snapshotId=${snapshotId}`).then(r => r.json()),
-    ]).then(([snap, discs]) => {
+      fetch(`/api/insights?kind=system&snapshotId=${snapshotId}`).then(r => r.json()),
+    ]).then(([snap, discs, insights]) => {
       if (snap.findings) setFindings(JSON.parse(snap.findings))
       if (Array.isArray(discs)) setDiscussions(discs)
+      if (Array.isArray(insights)) setSystemInsights(insights)
       setLoading(false)
     })
   }, [snapshotId])
+
+  async function refreshSystemInsights() {
+    if (!snapshotId) return
+    const res = await fetch(`/api/insights?kind=system&snapshotId=${snapshotId}`)
+    const data = await res.json()
+    if (res.ok && Array.isArray(data)) {
+      setSystemInsights(data)
+    }
+  }
 
   // 获取某 finding 的已有讨论
   function getDiscForIdx(idx: number) {
@@ -108,6 +140,42 @@ export default function DiscussionPage() {
       .then(r => r.json()).then(discs => { if (Array.isArray(discs)) setDiscussions(discs) })
   }
 
+  function formatInsightValue(raw: string) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (typeof parsed === 'object' && parsed !== null) {
+        return Object.entries(parsed)
+          .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : String(value)}`)
+          .join(' · ')
+      }
+      return String(parsed)
+    } catch {
+      return raw
+    }
+  }
+
+  async function handleInsightStatus(id: string, status: 'applied' | 'rejected') {
+    setInsightSubmitting(id)
+    setPageError('')
+    const res = await fetch('/api/insights', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'system',
+        id,
+        status,
+      }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      setPageError(data.error ?? '更新系统建议失败')
+      setInsightSubmitting(null)
+      return
+    }
+    await refreshSystemInsights()
+    setInsightSubmitting(null)
+  }
+
   if (!snapshotId) return (
     <div className="max-w-lg mx-auto px-4 pt-16 text-center text-gray-400">
       <p>缺少分析快照 ID</p>
@@ -130,6 +198,12 @@ export default function DiscussionPage() {
         <p>AI 可能产生幻觉。你的反馈会写入分析记录，下次分析时 AI 会读到，不重复同样的错误。否定的次数越多，分析越准确。</p>
       </div>
 
+      {pageError && (
+        <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+          {pageError}
+        </div>
+      )}
+
       {loading ? (
         <div className="space-y-4">{[1,2,3].map(i => <div key={i} className="h-32 bg-gray-100 rounded-2xl animate-pulse" />)}</div>
       ) : findings.length === 0 ? (
@@ -140,6 +214,71 @@ export default function DiscussionPage() {
         </div>
       ) : (
         <div className="space-y-4">
+          {systemInsights.length > 0 && (
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div>
+                  <p className="font-semibold text-gray-900 text-sm">可执行系统建议</p>
+                  <p className="text-xs text-gray-400 mt-0.5">这部分一旦应用，主训练流就会开始读取</p>
+                </div>
+                <span className="text-xs text-gray-400">{systemInsights.length} 条</span>
+              </div>
+
+              <div className="space-y-3">
+                {systemInsights.map(insight => (
+                  <div key={insight.id} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium text-gray-800">{insight.paramKey}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${
+                            insight.status === 'applied'
+                              ? 'bg-green-100 text-green-700'
+                              : insight.status === 'rejected'
+                                ? 'bg-red-100 text-red-600'
+                                : 'bg-amber-100 text-amber-700'
+                          }`}>
+                            {insight.status === 'applied' ? '已应用' : insight.status === 'rejected' ? '已拒绝' : '待应用'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {insight.insightCategory} · 置信度 {Math.round(insight.confidence * 100)}%
+                        </p>
+                        <p className="text-sm text-gray-700 mt-2 break-words">
+                          {formatInsightValue(insight.paramValueNew)}
+                        </p>
+                        {insight.rejectionReason && (
+                          <p className="text-xs text-red-500 mt-2">拒绝原因：{insight.rejectionReason}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {insight.status === 'pending' && (
+                      <div className="flex gap-2 mt-3">
+                        <button
+                          type="button"
+                          onClick={() => handleInsightStatus(insight.id, 'applied')}
+                          disabled={insightSubmitting === insight.id}
+                          className="flex-1 py-2 text-xs bg-green-600 text-white rounded-xl font-medium disabled:opacity-50"
+                        >
+                          {insightSubmitting === insight.id ? '处理中...' : '应用到主流程'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleInsightStatus(insight.id, 'rejected')}
+                          disabled={insightSubmitting === insight.id}
+                          className="flex-1 py-2 text-xs border border-red-200 text-red-600 rounded-xl font-medium disabled:opacity-50"
+                        >
+                          先拒绝
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {findings.map((finding, idx) => {
             const discs      = getDiscForIdx(idx)
             const confidence = getEffectiveConfidence(finding, idx)

@@ -6,14 +6,15 @@
 // O7: 记住上次练习模式
 
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { CorrectionCard } from '@/components/practice/correction-card'
 import { StateBadge } from '@/components/practice/state-badge'
 import { getQuestionState, SPEED_LIMITS } from '@/lib/mastery-engine'
+import { buildPaperModuleGroups, buildPaperModuleLabel, smoothPaperModuleLabels } from '@/lib/paper-modules'
 import { useTimer, formatTime } from '@/lib/use-timer'
 
 type PracticeMode = 'quick' | 'deep'
-type Step = 'mode_select' | 'answering' | 'thinking' | 'revealed' | 'done'
+type Step = 'paper_intro' | 'paper_submit' | 'mode_select' | 'answering' | 'thinking' | 'revealed' | 'done'
 type ThinkingVerdict = 'correct' | 'partial' | 'wrong'
 
 interface QueueItem {
@@ -27,6 +28,7 @@ interface QueueItem {
   question: {
     id:       string
     content:  string
+    questionImage?: string | null
     options:  string
     answer:   string
     type:     string
@@ -48,28 +50,117 @@ interface SubmitResult {
   preStockified:    boolean
   isHot:            boolean
   reboundAlert:     boolean
+  addedToErrorBook?: boolean
 }
 
 const MODE_KEY = 'pref_practice_mode'
+
+interface PaperAnswerState {
+  selected: string
+  submitResult: SubmitResult | null
+  timeSpentSeconds: number
+}
+
+interface PaperSessionRecord {
+  id: string
+  paperKey: string
+  paperTitle: string | null
+  paperYear: string | null
+  paperProvince: string | null
+  paperExamType: string | null
+  totalQuestions: number
+  activitySessionId: string
+  currentIndex: number
+  step: 'paper_intro' | 'answering' | 'thinking' | 'revealed' | 'paper_submit' | 'done'
+  status: 'active' | 'completed' | 'abandoned'
+  answered: number[]
+  marked: number[]
+  answers: Record<string, PaperAnswerState>
+  startedAt: string
+  lastAccessedAt: string
+  completedAt: string | null
+}
 
 function parseOptions(raw: string | undefined): string[] {
   if (!raw) return []
   try { return JSON.parse(raw) } catch { return [] }
 }
 
+function formatQuestionContent(content: string, hasImage: boolean) {
+  if (!content) return ''
+  const next = hasImage ? content.replace(/\[图\]/g, '').trim() : content
+  return next || (hasImage ? '请结合上方图片作答。' : content)
+}
+
+function formatOptionLabel(option: string, hasQuestionImage: boolean) {
+  if (!option) return ''
+  const normalized = option
+    .replace(/^([A-D])\.\1$/, '$1.见图')
+    .replace(/\[图[A-D]?\]/g, hasQuestionImage ? '见图' : '[图]')
+  return normalized
+}
+
 function getResultLabel(matrix: string) {
   return { '1': '⬆️ 升级', '2': '➡️ 维持', '3': '➡️ 维持', '4': '⬇️ 降级' }[matrix] ?? ''
 }
 
+function formatAvgSeconds(totalSeconds: number, answeredCount: number) {
+  if (!answeredCount) return '0:00'
+  return formatTime(Math.round(totalSeconds / answeredCount))
+}
+
+function normalizePaperAnswers(answers: Record<string, PaperAnswerState>) {
+  return Object.fromEntries(
+    Object.entries(answers)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([key, value]) => [key, value])
+  )
+}
+
+function buildPaperSessionSnapshot(params: {
+  idx: number
+  step: Step
+  paperAnswered: Set<number>
+  paperMarked: Set<number>
+  paperAnswers: Record<number, PaperAnswerState>
+}) {
+  return {
+    currentIndex: params.idx,
+    step: params.step,
+    answered: Array.from(params.paperAnswered).sort((a, b) => a - b),
+    marked: Array.from(params.paperMarked).sort((a, b) => a - b),
+    answers: normalizePaperAnswers(
+      Object.fromEntries(
+        Object.entries(params.paperAnswers).map(([key, value]) => [key, value])
+      )
+    ),
+  }
+}
+
 export default function PracticePage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const paper = searchParams.get('paper')
+  const paperStartAtQuestion = searchParams.get('startAtQuestion')
+  const paperFocusModule = searchParams.get('focusModule')
 
   // O7: 记住上次模式
   const savedMode = (typeof window !== 'undefined' ? localStorage.getItem(MODE_KEY) : null) as PracticeMode | null
 
-  const [step, setStep]         = useState<Step>('mode_select')
+  const [step, setStep]         = useState<Step>(paper ? 'paper_intro' : 'mode_select')
   const [mode, setMode]         = useState<PracticeMode>(savedMode ?? 'deep')
   const [queue, setQueue]       = useState<QueueItem[]>([])
+  const [paperTitle, setPaperTitle] = useState('')
+  const [paperYear, setPaperYear] = useState('')
+  const [paperProvince, setPaperProvince] = useState('')
+  const [paperExamType, setPaperExamType] = useState('')
+  const [paperBreakdown, setPaperBreakdown] = useState<Record<string, number>>({})
+  const [paperResume, setPaperResume] = useState<PaperSessionRecord | null>(null)
+  const [paperAnswered, setPaperAnswered] = useState<Set<number>>(new Set())
+  const [paperMarked, setPaperMarked] = useState<Set<number>>(new Set())
+  const [paperAnswers, setPaperAnswers] = useState<Record<number, PaperAnswerState>>({})
+  const [paperCardCollapsed, setPaperCardCollapsed] = useState(false)
+  const [paperLoading, setPaperLoading] = useState(false)
   const [idx, setIdx]           = useState(0)
   const [loading, setLoading]   = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
@@ -81,23 +172,168 @@ export default function PracticePage() {
   const [sessionStats, setSessionStats] = useState({ done: 0, stockifiedNow: 0 })
   const [diagnosing, setDiagnosing] = useState(false)
   const [customAnalysis, setCustomAnalysis] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [submitError, setSubmitError] = useState('')
   const sessionStartRef = useRef<string>(new Date().toISOString())
 
   const current  = queue[idx]
   const options  = parseOptions(current?.question?.options)
+  const displayQuestionContent = current ? formatQuestionContent(current.question.content, Boolean(current.question.questionImage)) : ''
   const isLast   = idx >= queue.length - 1
 
   // A5: 计时器
   const timer = useTimer(current?.question?.type ?? '判断推理')
+  const paperAnsweredCount = paperAnswered.size
+  const paperMarkedCount = paperMarked.size
+  const paperUnansweredCount = Math.max(0, queue.length - paperAnsweredCount)
+  const paperSpentSeconds = Object.values(paperAnswers).reduce((sum, answer) => sum + answer.timeSpentSeconds, 0)
+  const paperElapsedSeconds =
+    paper && (step === 'answering' || step === 'thinking') && !paperAnswers[idx]
+      ? paperSpentSeconds + timer.elapsed
+      : paperSpentSeconds
+  const paperProgressPercent = queue.length > 0 ? Math.round((paperAnsweredCount / queue.length) * 100) : 0
+  const currentQuestionMarked = paperMarked.has(idx)
+  const currentQuestionAnswered = paperAnswered.has(idx)
+  const unansweredQuestionIndexes = queue
+    .map((_, questionIndex) => questionIndex)
+    .filter(questionIndex => !paperAnswered.has(questionIndex))
+  const nextUnansweredIndex = unansweredQuestionIndexes.find(questionIndex => questionIndex > idx) ?? unansweredQuestionIndexes[0] ?? null
+  const averagePerQuestion = formatAvgSeconds(paperElapsedSeconds, Math.max(paperAnsweredCount, 1))
+  const rawPaperModuleLabels = queue.map(item => buildPaperModuleLabel(item.question.type, item.question.subtype))
+  const normalizedPaperModuleLabels = smoothPaperModuleLabels(rawPaperModuleLabels)
+  const paperModuleGroups = buildPaperModuleGroups(normalizedPaperModuleLabels)
+  const currentModuleLabel = normalizedPaperModuleLabels[idx] ?? ''
+  const currentModule = paperModuleGroups.find(group => group.label === currentModuleLabel) ?? null
+  const currentModuleAnsweredCount = currentModule
+    ? currentModule.indexes.filter(questionIndex => paperAnswered.has(questionIndex)).length
+    : 0
+  const currentModuleMarkedCount = currentModule
+    ? currentModule.indexes.filter(questionIndex => paperMarked.has(questionIndex)).length
+    : 0
+  const currentModuleRemainingCount = currentModule
+    ? currentModule.indexes.length - currentModuleAnsweredCount
+    : 0
+  const averageSecondsPerAnswered = paperAnsweredCount > 0 ? paperElapsedSeconds / paperAnsweredCount : 0
+  const estimatedRemainingSeconds = paperUnansweredCount > 0 ? Math.round(averageSecondsPerAnswered * paperUnansweredCount) : 0
+  const paperPaceLabel =
+    averageSecondsPerAnswered === 0
+      ? '等待开始'
+      : averageSecondsPerAnswered <= 50
+        ? '节奏偏快'
+        : averageSecondsPerAnswered <= 90
+          ? '节奏正常'
+          : '节奏偏慢'
+
+  function togglePaperMarked(questionIndex: number) {
+    setPaperMarked(prev => {
+      const next = new Set(prev)
+      if (next.has(questionIndex)) next.delete(questionIndex)
+      else next.add(questionIndex)
+      return next
+    })
+  }
+
+  function handlePaperJumpNext() {
+    if (!paper) return
+    if (isLast) {
+      setStep('paper_submit')
+      return
+    }
+    resetQuestionView(idx + 1)
+  }
+
+  function getPaperFocusIndex() {
+    const targetNo = paperStartAtQuestion ? Number(paperStartAtQuestion) : null
+    if (targetNo && Number.isFinite(targetNo) && targetNo >= 1 && targetNo <= queue.length) {
+      return targetNo - 1
+    }
+    if (paperFocusModule) {
+      const group = paperModuleGroups.find(item => item.label === paperFocusModule)
+      if (group?.indexes.length) return group.indexes[0]
+    }
+    return null
+  }
+
+  function focusPaperAtTarget() {
+    const targetIndex = getPaperFocusIndex()
+    if (targetIndex == null) return
+    resetQuestionView(targetIndex)
+  }
 
   useEffect(() => {
+    if (paper) {
+      setPaperLoading(true)
+      setLoadError('')
+      setPaperAnswered(new Set())
+      setPaperMarked(new Set())
+      setPaperAnswers({})
+      setSelected(null)
+      setSubmitResult(null)
+      setSubmitError('')
+      setThinking('')
+      setVerdict(null)
+      setVerdictFeedback('')
+      setCustomAnalysis('')
+      Promise.all([
+        fetch(`/api/papers?paper=${encodeURIComponent(paper)}`),
+        fetch(`/api/paper-sessions?paper=${encodeURIComponent(paper)}`),
+      ])
+        .then(async ([paperRes, sessionRes]) => {
+          const paperData = await paperRes.json()
+          if (!paperRes.ok) throw new Error(paperData.error ?? '套卷加载失败')
+
+          const sessionData = await sessionRes.json().catch(() => ({}))
+          if (sessionRes.ok) {
+            setPaperResume(sessionData.paperSession ?? null)
+          } else {
+            setPaperResume(null)
+          }
+
+          setPaperTitle(paperData.title ?? paper)
+          setPaperYear(paperData.srcYear ?? '')
+          setPaperProvince(paperData.srcProvince ?? '')
+          setPaperExamType(paperData.examType ?? '')
+          setPaperBreakdown(paperData.typeBreakdown ?? {})
+          setQueue(paperData.items ?? [])
+          setStep('paper_intro')
+        })
+        .catch((e: any) => {
+          setQueue([])
+          setPaperResume(null)
+          setLoadError(e?.message ?? '套卷加载失败')
+        })
+        .finally(() => setPaperLoading(false))
+      return
+    }
+
+    setPaperTitle('')
+    setPaperYear('')
+    setPaperProvince('')
+    setPaperExamType('')
+    setPaperBreakdown({})
+    setPaperResume(null)
+    setPaperAnswered(new Set())
+    setPaperMarked(new Set())
+    setPaperAnswers({})
+    setPaperLoading(false)
+    setSelected(null)
+    setThinking('')
+    setVerdict(null)
+    setVerdictFeedback('')
+    setSubmitResult(null)
+    setSubmitError('')
+    setCustomAnalysis('')
+    setLoadError('')
     fetch('/api/daily-tasks')
-      .then(r => r.json())
+      .then(async r => {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error ?? '今日任务加载失败')
+        return data
+      })
       .then(async data => {
         const errorIds    = data.reviewErrors?.map((e: any) => e.userErrorId) ?? []
         const questionIds = data.practiceQuestions ?? []
 
-        // F1: 分别用 ids（错题）和 qids（真题）查询
         const params = new URLSearchParams()
         if (errorIds.length)    params.set('ids',  errorIds.join(','))
         if (questionIds.length) params.set('qids', questionIds.join(','))
@@ -106,23 +342,216 @@ export default function PracticePage() {
 
         const res   = await fetch(`/api/errors/queue?${params}`)
         const items = await res.json()
+        if (!res.ok) throw new Error(items.error ?? '练习队列加载失败')
         setQueue(items)
+        setStep('mode_select')
       })
-  }, [])
+      .catch((e: any) => {
+        setQueue([])
+        setLoadError(e?.message ?? '练习队列加载失败')
+      })
+  }, [paper])
+
+  function applyPaperResume(resume: PaperSessionRecord) {
+    sessionStartRef.current = resume.activitySessionId || new Date().toISOString()
+    setPaperAnswered(new Set(resume.answered))
+    setPaperMarked(new Set(resume.marked))
+    const normalizedAnswers = Object.fromEntries(
+      Object.entries(resume.answers ?? {}).map(([key, value]) => [Number(key), value])
+    ) as Record<number, PaperAnswerState>
+    setPaperAnswers(normalizedAnswers)
+    const nextIdx = Math.min(Math.max(resume.currentIndex, 0), Math.max(queue.length - 1, 0))
+    setIdx(nextIdx)
+    const answeredState = normalizedAnswers[nextIdx]
+    setSelected(answeredState?.selected ?? null)
+    setThinking('')
+    setVerdict(null)
+    setCustomAnalysis('')
+    setVerdictFeedback('')
+    setSubmitError('')
+    setSubmitResult(answeredState?.submitResult ?? null)
+    setStep(resume.step)
+  }
+
+  useEffect(() => {
+    if (!paper || !paperResume || paperResume.status !== 'active' || queue.length === 0) return
+    if (step !== 'answering' && step !== 'thinking' && step !== 'revealed' && step !== 'paper_submit') return
+
+    const snapshot = buildPaperSessionSnapshot({
+      idx,
+      step,
+      paperAnswered,
+      paperMarked,
+      paperAnswers,
+    })
+
+    const timerId = window.setTimeout(() => {
+      fetch('/api/paper-sessions', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'sync',
+          sessionId: paperResume.id,
+          paperKey: paper,
+          paperTitle,
+          paperYear,
+          paperProvince,
+          paperExamType,
+          totalQuestions: queue.length,
+          ...snapshot,
+        }),
+      })
+        .then(async res => {
+          const data = await res.json().catch(() => ({}))
+          if (res.ok && data.paperSession) {
+            setPaperResume(data.paperSession)
+          }
+        })
+        .catch(() => {})
+    }, 150)
+
+    return () => window.clearTimeout(timerId)
+  }, [paper, paperResume?.id, paperResume?.status, queue.length, idx, step, paperAnswered, paperMarked, paperAnswers, paperTitle, paperYear, paperProvince, paperExamType])
 
   // 每次切到新题开始计时
   useEffect(() => {
     if (step === 'answering') timer.start()
   }, [step, idx])
 
+  useEffect(() => {
+    if (!paper || step === 'paper_intro' || step === 'done') return
+
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName?.toLowerCase()
+      if (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target?.isContentEditable) return
+
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        if (step === 'paper_submit') {
+          setStep('answering')
+          return
+        }
+        if (idx > 0) resetQuestionView(idx - 1)
+        return
+      }
+
+      if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        if (step === 'paper_submit') {
+          setStep('answering')
+          return
+        }
+        handlePaperJumpNext()
+        return
+      }
+
+      if (event.key.toLowerCase() === 'm' && (step === 'answering' || step === 'thinking' || step === 'revealed')) {
+        event.preventDefault()
+        togglePaperMarked(idx)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [paper, step, idx, paperAnsweredCount, paperMarkedCount, queue.length])
+
   function handleSelectMode(m: PracticeMode) {
     setMode(m)
     localStorage.setItem(MODE_KEY, m)  // O7
+    setSubmitError('')
     setStep('answering')
+  }
+
+  async function startPaperPractice() {
+    if (!paper) return
+    setMode('quick')
+    localStorage.setItem(MODE_KEY, 'quick')
+    setSubmitError('')
+
+    if (paperResume?.status === 'active') {
+      applyPaperResume(paperResume)
+      window.setTimeout(() => focusPaperAtTarget(), 0)
+      return
+    }
+
+    const res = await fetch('/api/paper-sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'start',
+        paperKey: paper,
+        paperTitle,
+        paperYear,
+        paperProvince,
+        paperExamType,
+        totalQuestions: queue.length,
+        currentIndex: 0,
+        step: 'answering',
+        answered: [],
+        marked: [],
+        answers: {},
+      }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      setSubmitError(data.error ?? '套卷会话创建失败')
+      return
+    }
+
+    const created = data.paperSession as PaperSessionRecord | null
+    if (!created) {
+      setSubmitError('套卷会话创建失败')
+      return
+    }
+    setPaperResume(created)
+    applyPaperResume(created)
+    window.setTimeout(() => focusPaperAtTarget(), 0)
+  }
+
+  async function restartPaperPractice() {
+    if (!paper) return
+    setSubmitError('')
+
+    const res = await fetch('/api/paper-sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'restart',
+        paperKey: paper,
+        paperTitle,
+        paperYear,
+        paperProvince,
+        paperExamType,
+        totalQuestions: queue.length,
+        currentIndex: 0,
+        step: 'answering',
+        answered: [],
+        marked: [],
+        answers: {},
+      }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      setSubmitError(data.error ?? '重开套卷失败')
+      return
+    }
+
+    const created = data.paperSession as PaperSessionRecord | null
+    if (!created) {
+      setSubmitError('重开套卷失败')
+      return
+    }
+
+    setPaperResume(created)
+    applyPaperResume(created)
+    window.setTimeout(() => focusPaperAtTarget(), 0)
   }
 
   function handleSelect(opt: string) {
     if (step !== 'answering') return
+    if (paper && paperAnswers[idx]) return
+    setSubmitError('')
     setSelected(opt.charAt(0))
     if (mode === 'quick') {
       const timeSpent = timer.stop()
@@ -158,6 +587,7 @@ export default function PracticePage() {
   const handleReveal = useCallback(async (answer: string | null, tv: ThinkingVerdict | null, timeSpent: number) => {
     if (!current) return
     setLoading(true)
+    setSubmitError('')
     const sel = answer ?? selected
     if (!sel) { setLoading(false); return }
 
@@ -175,10 +605,13 @@ export default function PracticePage() {
         thinkingInputType: mode === 'deep' ? 'text' : null,
         practiceMode:     mode,
         selectedAnswer:   sel,
+        sessionId:        sessionStartRef.current,
       }
       if (current.source === 'practice') {
         submitBody.source     = 'practice'
         submitBody.questionId = current.questionId
+        submitBody.paperSessionId = paperResume?.id
+        submitBody.paperQuestionIndex = idx
       } else {
         submitBody.source      = 'error'
         submitBody.userErrorId = current.userErrorId
@@ -189,39 +622,473 @@ export default function PracticePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(submitBody),
       })
-      const result: SubmitResult = await res.json()
-      setSubmitResult(result)
+      const result: SubmitResult & { error?: string } = await res.json()
+      if (!res.ok) throw new Error(result.error ?? '提交失败，请稍后重试')
+        setSubmitResult(result)
+        if (paper) {
+          const nextPaperAnswers = {
+            ...paperAnswers,
+            [idx]: {
+              selected: sel,
+              submitResult: result,
+              timeSpentSeconds: timeSpent,
+            },
+          }
+          const nextPaperAnswered = new Set(paperAnswered)
+          nextPaperAnswered.add(idx)
+          setPaperAnswers(prev => ({
+            ...prev,
+            [idx]: {
+              selected: sel,
+              submitResult: result,
+              timeSpentSeconds: timeSpent,
+            },
+          }))
+          setPaperAnswered(nextPaperAnswered)
+
+      if (paperResume?.id) {
+            fetch('/api/paper-sessions', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'sync',
+                sessionId: paperResume.id,
+                paperKey: paper,
+                paperTitle,
+                paperYear,
+                paperProvince,
+                paperExamType,
+                totalQuestions: queue.length,
+                ...buildPaperSessionSnapshot({
+                  idx,
+                  step: 'revealed',
+                  paperAnswered: nextPaperAnswered,
+                  paperMarked,
+                  paperAnswers: nextPaperAnswers,
+                }),
+              }),
+            })
+              .then(async res => {
+                const data = await res.json().catch(() => ({}))
+                if (res.ok && data.paperSession) {
+                  setPaperResume(data.paperSession)
+                }
+              })
+              .catch(() => {})
+          }
+      }
       setSessionStats(s => ({
         done:          s.done + 1,
         stockifiedNow: s.stockifiedNow + (result.wasStockifiedNow ? 1 : 0),
       }))
-    } catch {}
-    setStep('revealed')
+      setStep('revealed')
+    } catch (error: any) {
+      setSubmitError(error?.message ?? '提交失败，请稍后重试')
+      setStep(mode === 'deep' ? 'thinking' : 'answering')
+    }
     setLoading(false)
-  }, [current, selected, thinking, verdictFeedback, mode])
+  }, [current, selected, thinking, verdictFeedback, mode, paper, paperResume, paperTitle, paperYear, paperProvince, paperExamType, queue.length, paperAnswered, paperMarked, paperAnswers])
 
   function handleDeepReveal() {
     const timeSpent = timer.stop()
     handleReveal(selected, verdict, timeSpent)
   }
 
+  function resetQuestionView(nextIndex: number) {
+    setIdx(nextIndex)
+    const answeredState = paper ? paperAnswers[nextIndex] : undefined
+    setSelected(answeredState?.selected ?? null)
+    setThinking('')
+    setVerdict(null)
+    setCustomAnalysis('')
+    setVerdictFeedback('')
+    setSubmitError('')
+    setSubmitResult(answeredState?.submitResult ?? null)
+    setStep(answeredState ? 'revealed' : 'answering')
+  }
+
+  function handleSubmitPaper() {
+    const finalize = async () => {
+      if (paper && paperResume?.id) {
+        const snapshot = buildPaperSessionSnapshot({
+          idx,
+          step: 'paper_submit',
+          paperAnswered,
+          paperMarked,
+          paperAnswers,
+        })
+        const res = await fetch('/api/paper-sessions', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'complete',
+            sessionId: paperResume.id,
+            paperKey: paper,
+            paperTitle,
+            paperYear,
+            paperProvince,
+            paperExamType,
+            totalQuestions: queue.length,
+            ...snapshot,
+          }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data.error ?? '交卷失败')
+      }
+
+      const params = new URLSearchParams({ since: sessionStartRef.current })
+      params.set('sessionId', sessionStartRef.current)
+      if (paper) params.set('paper', paper)
+      if (paperTitle) params.set('paperTitle', paperTitle)
+      if (paperYear) params.set('paperYear', paperYear)
+      params.set('totalExpected', String(queue.length))
+      params.set('durationSeconds', String(paperElapsedSeconds))
+      if (paperMarked.size > 0) {
+        params.set('markedQuestions', Array.from(paperMarked).sort((a, b) => a - b).map(index => index + 1).join(','))
+      }
+      const unanswered = queue
+        .map((_, questionIndex) => questionIndex)
+        .filter(questionIndex => !paperAnswered.has(questionIndex))
+        .map(questionIndex => questionIndex + 1)
+      if (unanswered.length > 0) {
+        params.set('unansweredQuestions', unanswered.join(','))
+      }
+      router.push('/practice/summary?' + params.toString())
+    }
+
+    finalize().catch(error => {
+      setSubmitError(error?.message ?? '交卷失败，请重试')
+    })
+  }
+
   function handleNext() {
     if (isLast) {
-      router.push('/practice/summary?since=' + encodeURIComponent(sessionStartRef.current))
+      if (paper) {
+        setStep('paper_submit')
+        return
+      }
+      handleSubmitPaper()
       return
     }
-    setIdx(i => i + 1)
-    setSelected(null); setThinking(''); setVerdict(null); setCustomAnalysis('')
-    setVerdictFeedback(''); setSubmitResult(null)
-    setStep('answering')
+    resetQuestionView(idx + 1)
   }
 
   // ── 模式选择 ────────────────────────────────────────────
+  if (step === 'paper_intro') {
+    const typeEntries = Object.entries(paperBreakdown).sort((a, b) => b[1] - a[1])
+    return (
+      <div data-testid="paper-intro" className="max-w-lg mx-auto px-4 pt-6 pb-8">
+        <button onClick={() => router.push('/papers')} className="text-gray-400 min-h-[44px] min-w-[44px] flex items-center mb-4">←</button>
+
+        <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-5 mb-4">
+          <p className="text-xs font-medium text-blue-500 mb-2">套卷概览</p>
+          <h1 data-testid="paper-intro-title" className="text-2xl font-bold text-gray-900 leading-tight">
+            {paperTitle || '整套练习'}
+          </h1>
+          <p className="text-sm text-gray-400 mt-2">
+            {[paperYear, paperProvince, paperExamType === 'guo_kao' ? '国考' : paperExamType === 'sheng_kao' ? '省考' : paperExamType === 'tong_kao' ? '统考' : ''].filter(Boolean).join(' · ')}
+          </p>
+
+          <div className="grid grid-cols-3 gap-3 mt-5">
+            <div className="rounded-2xl bg-gray-50 p-3 text-center">
+              <p className="text-2xl font-bold text-gray-900">{paperLoading ? '...' : queue.length}</p>
+              <p className="text-xs text-gray-400 mt-1">总题数</p>
+            </div>
+            <div className="rounded-2xl bg-gray-50 p-3 text-center">
+              <p className="text-2xl font-bold text-gray-900">{Object.keys(paperBreakdown).length}</p>
+              <p className="text-xs text-gray-400 mt-1">题型数</p>
+            </div>
+            <div className="rounded-2xl bg-gray-50 p-3 text-center">
+              <p className="text-2xl font-bold text-gray-900">{formatTime(paperElapsedSeconds)}</p>
+              <p className="text-xs text-gray-400 mt-1">当前用时</p>
+            </div>
+          </div>
+        </div>
+
+        {typeEntries.length > 0 && (
+          <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-5 mb-4">
+            <p className="text-sm font-semibold text-gray-800 mb-3">题型分布</p>
+            <div className="space-y-2.5">
+              {typeEntries.map(([type, count]) => (
+                <div key={type}>
+                  <div className="flex items-center justify-between text-sm mb-1">
+                    <span className="text-gray-700">{type}</span>
+                    <span className="text-gray-400">{count} 题</span>
+                  </div>
+                  <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-500 rounded-full"
+                      style={{ width: `${Math.round((count / Math.max(queue.length, 1)) * 100)}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-5">
+          <p className="text-sm font-medium text-amber-700">
+            {paperLoading ? '正在加载整套题目...' : '这次会按整套卷的顺序连续做题。'}
+          </p>
+          <p className="text-xs text-amber-600 mt-1">
+            {loadError ? loadError : '支持题号跳转、存疑标记、交卷检查和继续作答。'}
+          </p>
+        </div>
+
+        {paperResume && (
+          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-5">
+            <p className="text-sm font-medium text-blue-700">
+              检测到上次做到第 {paperResume.currentIndex + 1} 题
+            </p>
+            <p className="text-xs text-blue-600 mt-1">
+              已做 {paperResume.answered.length} / {queue.length} 题
+              {paperResume.marked.length > 0 ? ` · 存疑 ${paperResume.marked.length} 题` : ''}
+            </p>
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <button
+                data-testid="paper-resume-restart"
+                type="button"
+                onClick={restartPaperPractice}
+                className="py-3 border border-blue-200 bg-white text-blue-700 font-medium rounded-2xl text-sm"
+              >
+                重新开始
+              </button>
+              <button
+                data-testid="paper-resume-continue"
+                type="button"
+                onClick={startPaperPractice}
+                className="py-3 bg-blue-600 text-white font-bold rounded-2xl text-sm"
+              >
+                继续作答
+              </button>
+            </div>
+          </div>
+        )}
+
+        <button
+          data-testid="paper-intro-start-button"
+          onClick={paperResume ? restartPaperPractice : startPaperPractice}
+          disabled={paperLoading || queue.length === 0}
+          className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl text-base hover:bg-blue-700 transition-colors disabled:opacity-40"
+        >
+          {paperLoading ? '加载中...' : queue.length > 0 ? (paperResume ? '放弃进度并重新开始' : '开始整套练习') : '当前套卷暂无题目'}
+        </button>
+      </div>
+    )
+  }
+
+  if (step === 'paper_submit' && paper) {
+    const unanswered = unansweredQuestionIndexes
+    const firstMarkedQuestion = Array.from(paperMarked).sort((a, b) => a - b)[0] ?? null
+    const firstUnansweredQuestion = unanswered[0] ?? null
+
+    return (
+      <div data-testid="paper-submit" className="max-w-lg mx-auto px-4 pt-6 pb-8">
+        <button
+          onClick={() => setStep('answering')}
+          className="text-gray-400 min-h-[44px] min-w-[44px] flex items-center mb-4"
+        >
+          ←
+        </button>
+
+        <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-5 mb-4">
+          <p className="text-xs font-medium text-blue-500 mb-2">交卷前检查</p>
+          <h1 className="text-2xl font-bold text-gray-900 leading-tight">
+            {paperTitle || '整套练习'}
+          </h1>
+          <p className="text-sm text-gray-400 mt-2">
+            已做 {paperAnswered.size} / {queue.length} 题
+            {paperMarked.size > 0 ? ` · 存疑 ${paperMarked.size} 题` : ''}
+          </p>
+          <div className="grid grid-cols-4 gap-3 mt-5">
+            <div className="rounded-2xl bg-gray-50 p-3 text-center">
+              <p className="text-lg font-bold text-gray-900">{paperAnswered.size}</p>
+              <p className="text-xs text-gray-400 mt-1">已做</p>
+            </div>
+            <div className="rounded-2xl bg-gray-50 p-3 text-center">
+              <p className="text-lg font-bold text-amber-600">{unanswered.length}</p>
+              <p className="text-xs text-gray-400 mt-1">未做</p>
+            </div>
+            <div className="rounded-2xl bg-gray-50 p-3 text-center">
+              <p className="text-lg font-bold text-red-600">{paperMarked.size}</p>
+              <p className="text-xs text-gray-400 mt-1">存疑</p>
+            </div>
+            <div className="rounded-2xl bg-gray-50 p-3 text-center">
+              <p className="text-lg font-bold text-blue-700">{formatTime(paperElapsedSeconds)}</p>
+              <p className="text-xs text-gray-400 mt-1">用时</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mb-4 rounded-2xl border border-blue-100 bg-blue-50 p-4">
+          <p className="text-xs font-medium text-blue-500 mb-1">交卷提醒</p>
+          <p className="text-sm text-blue-900">
+            {unanswered.length > 0 && paperMarked.size > 0
+              ? `还有 ${unanswered.length} 题未作答，且有 ${paperMarked.size} 题存疑。建议先补完未做题，再检查存疑题。`
+              : unanswered.length > 0
+                ? `还有 ${unanswered.length} 题未作答。建议先补完再交卷。`
+                : paperMarked.size > 0
+                  ? `你标了 ${paperMarked.size} 道存疑题。建议交卷前先快速回看。`
+                  : '当前这份卷子已经可以放心交卷。'}
+          </p>
+        </div>
+
+        {(firstUnansweredQuestion != null || firstMarkedQuestion != null) && (
+          <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+            <p className="text-xs font-medium text-emerald-600 mb-2">交卷前行动建议</p>
+            <p className="text-sm text-emerald-900">
+              {firstUnansweredQuestion != null
+                ? `优先补第 ${firstUnansweredQuestion + 1} 题，再回看存疑和弱模块。`
+                : `先回看第 ${firstMarkedQuestion + 1} 题的存疑内容，再决定是否直接交卷。`}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {firstUnansweredQuestion != null && (
+                <button
+                  type="button"
+                  onClick={() => resetQuestionView(firstUnansweredQuestion)}
+                  className="px-3 py-2 rounded-xl bg-white border border-emerald-200 text-emerald-700 text-xs font-medium"
+                >
+                  跳到第 {firstUnansweredQuestion + 1} 题
+                </button>
+              )}
+              {firstMarkedQuestion != null && (
+                <button
+                  type="button"
+                  onClick={() => resetQuestionView(firstMarkedQuestion)}
+                  className="px-3 py-2 rounded-xl bg-white border border-emerald-200 text-emerald-700 text-xs font-medium"
+                >
+                  跳到存疑第 {firstMarkedQuestion + 1} 题
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm font-semibold text-gray-800">整卷题卡</p>
+            <button
+              type="button"
+              onClick={() => setPaperCardCollapsed(value => !value)}
+              className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-xs text-gray-500"
+            >
+              {paperCardCollapsed ? '展开题卡' : '收起题卡'}
+            </button>
+          </div>
+          {!paperCardCollapsed && (
+            <>
+              <div className="space-y-4">
+                {paperModuleGroups.map(group => (
+                  <div key={group.label}>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-medium text-gray-500">{group.label}</p>
+                      <span className="text-[11px] text-gray-400">{group.indexes.length} 题</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {group.indexes.map(questionIndex => {
+                        const isCurrent = questionIndex === idx
+                        const isAnswered = paperAnswered.has(questionIndex)
+                        const isMarked = paperMarked.has(questionIndex)
+                        return (
+                          <button
+                            key={questionIndex}
+                            type="button"
+                            onClick={() => resetQuestionView(questionIndex)}
+                            className={`min-w-[42px] h-10 rounded-xl text-sm font-medium border transition-colors ${
+                              isCurrent
+                                ? 'bg-blue-600 border-blue-600 text-white'
+                                : isMarked
+                                  ? 'bg-red-50 border-red-200 text-red-700'
+                                  : isAnswered
+                                    ? 'bg-green-50 border-green-200 text-green-700'
+                                    : 'bg-gray-50 border-gray-200 text-gray-400'
+                            }`}
+                          >
+                            {questionIndex + 1}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-3 mt-4 text-xs text-gray-500">
+                <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-600" /> 当前题</span>
+                <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-green-500" /> 已做</span>
+                <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-400" /> 存疑</span>
+                <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-gray-300" /> 未做</span>
+                <span className="inline-flex items-center gap-1">快捷键 `← → M`</span>
+              </div>
+            </>
+          )}
+        </div>
+
+        {unanswered.length > 0 ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4">
+            <p className="text-sm font-medium text-amber-700">还有 {unanswered.length} 道题未作答</p>
+            <div className="flex gap-2 overflow-x-auto mt-3 pb-1">
+              {unanswered.map(questionIndex => (
+                <button
+                  key={questionIndex}
+                  type="button"
+                  onClick={() => resetQuestionView(questionIndex)}
+                  className="min-w-[40px] h-10 rounded-xl text-sm font-medium border bg-white border-amber-200 text-amber-700"
+                >
+                  {questionIndex + 1}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="bg-green-50 border border-green-200 rounded-2xl p-4 mb-4 text-green-700 text-sm font-medium">
+            全部题目已完成，可以直接交卷。
+          </div>
+        )}
+
+        {paperMarked.size > 0 && (
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-5">
+            <p className="text-sm font-semibold text-gray-800 mb-3">已标记存疑题</p>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {Array.from(paperMarked).sort((a, b) => a - b).map(questionIndex => (
+                <button
+                  key={questionIndex}
+                  type="button"
+                  onClick={() => resetQuestionView(questionIndex)}
+                  className="min-w-[40px] h-10 rounded-xl text-sm font-medium border bg-red-50 border-red-200 text-red-700"
+                >
+                  {questionIndex + 1}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={() => setStep('answering')}
+            className="py-4 border border-gray-200 bg-white text-gray-700 font-bold rounded-2xl text-base"
+          >
+            回去继续做
+          </button>
+          <button
+            onClick={handleSubmitPaper}
+            className="py-4 bg-blue-600 text-white font-bold rounded-2xl text-base hover:bg-blue-700 transition-colors"
+          >
+            确认交卷
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   if (step === 'mode_select') {
     return (
       <div className="max-w-lg mx-auto px-4 pt-8">
-        <h2 className="text-xl font-bold text-gray-900 mb-2">选择练习模式</h2>
-        <p className="text-sm text-gray-500 mb-6">今日共 {queue.length} 道题</p>
+        <h2 className="text-xl font-bold text-gray-900 mb-2">{paper ? '选择套卷练习模式' : '选择练习模式'}</h2>
+        <p className="text-sm text-gray-500 mb-6">
+          {paperTitle ? `${paperYear ? `${paperYear} · ` : ''}${paperTitle} · 共 ${queue.length} 道题` : `今日共 ${queue.length} 道题`}
+        </p>
         <div className="space-y-3">
           {[
             { mode: 'deep'  as const, icon: '🎯', label: '深度练习模式', tag: '推荐',
@@ -248,20 +1115,40 @@ export default function PracticePage() {
 
   if (!current) return (
     <div className="max-w-lg mx-auto px-4 pt-16 text-center text-gray-400">
-      <p className="text-4xl mb-3">📭</p><p>今日没有待复习的题目</p>
-      <button onClick={() => router.push('/errors/new')} className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-xl text-sm">去录题</button>
+      <p className="text-4xl mb-3">📭</p><p>{paperTitle ? '这套卷暂时没有可练题目' : '今日没有待复习的题目'}</p>
+      {loadError && (
+        <p className="mt-3 text-sm text-red-500">{loadError}</p>
+      )}
+      <button onClick={() => router.push(paper ? '/papers' : '/errors/new')} className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-xl text-sm">
+        {paper ? '返回套卷' : '去录题'}
+      </button>
     </div>
   )
 
   const state = getQuestionState({ masteryPercent: current.masteryPercent, isStockified: false, daysToExam: null })
+  const isPaperMode = !!paper
+  const paperExamLabel =
+    paperExamType === 'guo_kao' ? '国考' :
+    paperExamType === 'sheng_kao' ? '省考' :
+    paperExamType === 'tong_kao' ? '统考' :
+    ''
 
   return (
-    <div className="max-w-lg mx-auto px-4 pt-4 pb-24">
+      <div data-testid="paper-practice-page" className="max-w-lg mx-auto px-4 pt-4 pb-24">
       {/* 进度条 + O2: 计时器 */}
       <div className="flex items-center gap-3 mb-4">
-        <button onClick={() => router.push('/dashboard')} className="text-gray-400 min-h-[44px] min-w-[44px] flex items-center">←</button>
+        <button onClick={() => {
+          if (isPaperMode) {
+            setStep(paperAnsweredCount > 0 ? 'paper_submit' : 'paper_intro')
+            return
+          }
+          router.push('/dashboard')
+        }} className="text-gray-400 min-h-[44px] min-w-[44px] flex items-center">←</button>
         <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-          <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${(idx / queue.length) * 100}%` }} />
+          <div
+            className="h-full bg-blue-500 rounded-full transition-all"
+            style={{ width: `${isPaperMode ? paperProgressPercent : (idx / Math.max(queue.length, 1)) * 100}%` }}
+          />
         </div>
         <span className="text-sm text-gray-400 tabular-nums">{idx + 1}/{queue.length}</span>
         {/* O2: 计时器 */}
@@ -273,21 +1160,224 @@ export default function PracticePage() {
         ) : null}
       </div>
 
-      {/* 题型 + 状态 */}
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-lg">
-          {current.question.type}{current.question.subtype ? ` · ${current.question.subtype}` : ''}
-        </span>
-        <StateBadge state={state} masteryPercent={current.masteryPercent} isHot={current.isHot} />
-      </div>
+      {isPaperMode ? (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-blue-500">整套练习</p>
+              <p className="text-sm font-semibold text-gray-900 line-clamp-2">
+                {paperTitle || '套卷'}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                {[paperYear, paperProvince, paperExamLabel].filter(Boolean).join(' · ')}
+              </p>
+            </div>
+            <div className="rounded-2xl bg-blue-50 px-3 py-2 text-center flex-shrink-0">
+              <p className="text-lg font-bold text-blue-700">第 {idx + 1} 题</p>
+              <p className="text-xs text-blue-400">共 {queue.length} 题</p>
+            </div>
+          </div>
+
+        <div className="grid grid-cols-2 gap-2 mb-3 sm:grid-cols-3">
+            <div className="rounded-xl bg-gray-50 px-3 py-2 text-center">
+              <p className="text-sm font-bold text-gray-900">{paperProgressPercent}%</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">完成率</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2 text-center">
+              <p className="text-sm font-bold text-green-600">{paperAnsweredCount}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">已做</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2 text-center">
+              <p className="text-sm font-bold text-red-600">{paperMarkedCount}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">存疑</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2 text-center">
+              <p className="text-sm font-bold text-blue-700">{formatTime(paperElapsedSeconds)}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">用时</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2 text-center">
+              <p className="text-sm font-bold text-emerald-700">{formatTime(estimatedRemainingSeconds)}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">预计剩余</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2 text-center">
+              <p className="text-sm font-bold text-gray-700">{paperPaceLabel}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">当前节奏</p>
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-3 mb-3">
+            <div className="flex items-center justify-between gap-3 text-xs">
+              <div>
+                <p className="text-slate-400">当前状态</p>
+                <p className="mt-1 font-medium text-slate-700">
+                  {currentQuestionAnswered
+                    ? currentQuestionMarked
+                      ? '本题已作答，且标记为存疑'
+                      : '本题已作答'
+                    : currentQuestionMarked
+                      ? '本题未作答，已标记存疑'
+                      : '本题待作答'}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-slate-400">平均用时</p>
+                <p className="mt-1 font-semibold text-slate-700">{averagePerQuestion}/题</p>
+              </div>
+            </div>
+          </div>
+
+          {currentModule && (
+            <div className="rounded-2xl bg-indigo-50 border border-indigo-100 px-3 py-3 mb-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-medium text-indigo-500">当前模块</p>
+                  <p className="text-sm font-semibold text-indigo-900 mt-1">{currentModule.label}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-indigo-400">模块进度</p>
+                  <p className="text-sm font-semibold text-indigo-900 mt-1">
+                    {currentModuleAnsweredCount}/{currentModule.indexes.length}
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2 mt-3 text-center">
+                <div className="rounded-xl bg-white/70 px-2 py-2">
+                  <p className="text-sm font-bold text-indigo-900">{currentModuleAnsweredCount}</p>
+                  <p className="text-[11px] text-indigo-400 mt-0.5">已做</p>
+                </div>
+                <div className="rounded-xl bg-white/70 px-2 py-2">
+                  <p className="text-sm font-bold text-amber-600">{currentModuleRemainingCount}</p>
+                  <p className="text-[11px] text-indigo-400 mt-0.5">未做</p>
+                </div>
+                <div className="rounded-xl bg-white/70 px-2 py-2">
+                  <p className="text-sm font-bold text-red-600">{currentModuleMarkedCount}</p>
+                  <p className="text-[11px] text-indigo-400 mt-0.5">存疑</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-lg">
+              {current.question.type}{current.question.subtype ? ` · ${current.question.subtype}` : ''}
+            </span>
+            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-lg">
+              未做 {paperUnansweredCount} 题
+            </span>
+            <button
+              type="button"
+              onClick={() => togglePaperMarked(idx)}
+              className={`text-xs px-2 py-1 rounded-lg border ${
+                paperMarked.has(idx)
+                  ? 'bg-red-50 border-red-200 text-red-600'
+                  : 'bg-white border-gray-200 text-gray-500'
+              }`}
+            >
+              {paperMarked.has(idx) ? '已标记存疑' : '标记存疑'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setStep('paper_submit')}
+              className="text-xs px-2 py-1 rounded-lg border bg-white border-gray-200 text-gray-500"
+            >
+              交卷检查
+            </button>
+            {nextUnansweredIndex != null && (
+              <button
+                type="button"
+                onClick={() => resetQuestionView(nextUnansweredIndex)}
+                className="text-xs px-2 py-1 rounded-lg border bg-white border-amber-200 text-amber-700"
+              >
+                下一道未做
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-gray-500">题卡</p>
+              <button
+                type="button"
+                onClick={() => setPaperCardCollapsed(value => !value)}
+                className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-[11px] text-gray-500"
+              >
+                {paperCardCollapsed ? '展开题卡' : '收起题卡'}
+              </button>
+            </div>
+            {!paperCardCollapsed && paperModuleGroups.map(group => (
+              <div key={group.label}>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-medium text-gray-500">{group.label}</p>
+                  <span className="text-[11px] text-gray-400">{group.indexes.length} 题</span>
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {group.indexes.map(questionIndex => {
+                    const isCurrent = questionIndex === idx
+                    const isAnswered = paperAnswered.has(questionIndex)
+                    const isMarked = paperMarked.has(questionIndex)
+                    return (
+                      <button
+                        key={questionIndex}
+                        type="button"
+                        onClick={() => resetQuestionView(questionIndex)}
+                        className={`min-w-[40px] h-10 rounded-xl text-sm font-medium border transition-colors ${
+                          isCurrent
+                            ? 'bg-blue-600 border-blue-600 text-white'
+                            : isMarked
+                              ? 'bg-red-50 border-red-200 text-red-700'
+                              : isAnswered
+                                ? 'bg-green-50 border-green-200 text-green-700'
+                                : 'bg-gray-50 border-gray-200 text-gray-400'
+                        }`}
+                      >
+                        {questionIndex + 1}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {!paperCardCollapsed && (
+            <div className="flex flex-wrap gap-3 mt-3 text-[11px] text-gray-500">
+              <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-600" /> 当前题</span>
+              <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-green-500" /> 已做</span>
+              <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-400" /> 存疑</span>
+              <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-gray-300" /> 未做</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-lg">
+            {current.question.type}{current.question.subtype ? ` · ${current.question.subtype}` : ''}
+          </span>
+          <StateBadge state={state} masteryPercent={current.masteryPercent} isHot={current.isHot} />
+        </div>
+      )}
 
       {/* 题目 */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
-        <p className="text-base text-gray-900 leading-relaxed whitespace-pre-wrap">{current.question.content}</p>
+        {current.question.questionImage && (
+          <img
+            src={current.question.questionImage}
+            alt="题目图片"
+            className="mb-4 w-full rounded-2xl border border-gray-100"
+          />
+        )}
+        <p data-testid="paper-question-content" className="text-base text-gray-900 leading-relaxed whitespace-pre-wrap">{displayQuestionContent}</p>
       </div>
 
+      {submitError && (
+        <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-4">
+          <p className="text-sm font-medium text-red-700">这道题提交失败</p>
+          <p className="mt-1 text-xs text-red-600">{submitError}</p>
+        </div>
+      )}
+
       {/* 修正卡 */}
-      {mode === 'deep' && step === 'answering' && (current.aiActionRule || current.question.sharedAiAnalysis) && (
+      {!isPaperMode && mode === 'deep' && step === 'answering' && (current.aiActionRule || current.question.sharedAiAnalysis) && (
         <div className="mb-4">
           <CorrectionCard
             skillTag={current.question.type}
@@ -305,16 +1395,52 @@ export default function PracticePage() {
           {options.map(opt => {
             const letter = opt.charAt(0)
             const isSel  = selected === letter
+            const displayOpt = formatOptionLabel(opt, Boolean(current.question.questionImage))
             return (
-              <button key={opt} onClick={() => handleSelect(opt)} disabled={step === 'thinking'}
+              <button key={opt} data-testid="paper-option" onClick={() => handleSelect(opt)} disabled={step === 'thinking'}
                 className={`w-full text-left px-4 py-3.5 rounded-xl border-2 transition-all text-sm min-h-[44px]
                   ${isSel ? 'border-blue-500 bg-blue-50 text-blue-900 font-medium'
                           : 'border-gray-100 bg-white text-gray-700 hover:border-gray-300'}
                   ${step === 'thinking' ? 'cursor-default' : 'active:scale-[0.98]'}`}>
-                {opt}
+                {displayOpt}
               </button>
             )
           })}
+        </div>
+      )}
+
+      {isPaperMode && (step === 'answering' || step === 'thinking') && (
+        <div className="fixed bottom-20 left-4 right-4 max-w-[calc(512px-2rem)] mx-auto">
+          <div className="grid grid-cols-3 gap-3">
+            <button
+              type="button"
+              onClick={() => resetQuestionView(Math.max(0, idx - 1))}
+              disabled={idx === 0}
+              className="py-3 border border-gray-200 bg-white text-gray-700 font-bold rounded-2xl text-sm disabled:opacity-40"
+            >
+              上一题
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (isLast) {
+                  setStep('paper_submit')
+                  return
+                }
+                resetQuestionView(idx + 1)
+              }}
+              className="py-3 border border-blue-200 bg-white text-blue-700 font-bold rounded-2xl text-sm"
+            >
+              {isLast ? '去交卷' : (currentQuestionAnswered ? '下一题' : '先跳过')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setStep('paper_submit')}
+              className="py-3 bg-blue-600 text-white font-bold rounded-2xl text-sm"
+            >
+              交卷检查
+            </button>
+          </div>
         </div>
       )}
 
@@ -325,12 +1451,13 @@ export default function PracticePage() {
             const letter = opt.charAt(0)
             const isRight = letter === current.question.answer
             const isWrong = letter === selected && !isRight
+            const displayOpt = formatOptionLabel(opt, Boolean(current.question.questionImage))
             return (
               <div key={opt} className={`w-full text-left px-4 py-3.5 rounded-xl border-2 text-sm
                 ${isRight ? 'border-green-500 bg-green-50 text-green-900 font-medium'
                 : isWrong ? 'border-red-400 bg-red-50 text-red-700'
                 : 'border-gray-100 bg-white text-gray-400'}`}>
-                {opt}
+                {displayOpt}
                 {isRight && <span className="ml-2 text-green-600">✓ 正确答案</span>}
                 {isWrong  && <span className="ml-2 text-red-500">✗ 我的选择</span>}
               </div>
@@ -340,7 +1467,7 @@ export default function PracticePage() {
       )}
 
       {/* 深度模式思路框 */}
-      {mode === 'deep' && step === 'thinking' && (
+      {!isPaperMode && mode === 'deep' && step === 'thinking' && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
           <p className="text-sm font-medium text-gray-700 mb-2">写下你的解题思路</p>
           <textarea value={thinking} onChange={e => setThinking(e.target.value)}
@@ -401,7 +1528,7 @@ export default function PracticePage() {
           )}
 
           {/* O4: AI 行动规则展示 */}
-          {current.aiActionRule && (
+          {!isPaperMode && current.aiActionRule && (
             <div className="bg-blue-50 border border-blue-100 rounded-xl p-3">
               <p className="text-xs text-blue-500 font-medium mb-1">📌 下次遇到类似题</p>
               <p className="text-sm text-blue-800 font-medium">{current.aiActionRule}</p>
@@ -409,7 +1536,7 @@ export default function PracticePage() {
           )}
 
           {/* B7: 个性化AI诊断按钮 */}
-          {!customAnalysis ? (
+          {!isPaperMode && !customAnalysis ? (
             <button onClick={async () => {
               setDiagnosing(true)
               try {
@@ -428,7 +1555,7 @@ export default function PracticePage() {
             </div>
           )}
 
-          {(current.question.analysis || current.question.sharedAiAnalysis) && (
+          {!isPaperMode && (current.question.analysis || current.question.sharedAiAnalysis) && (
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
               <p className="text-xs font-medium text-gray-500 mb-2">解析</p>
               <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
@@ -440,7 +1567,7 @@ export default function PracticePage() {
       )}
 
       {/* B7: 个性化AI诊断按钮（答错时显示）*/}
-      {step === 'revealed' && mode === 'deep' && selected !== current?.question?.answer && (
+      {step === 'revealed' && !isPaperMode && mode === 'deep' && selected !== current?.question?.answer && (
         <CustomDiagnosisButton
           questionContent={current.question.content}
           correctAnswer={current.question.answer}
@@ -449,10 +1576,31 @@ export default function PracticePage() {
       )}
 
       {step === 'revealed' && (
-        <button onClick={handleNext}
-          className="fixed bottom-20 left-4 right-4 max-w-[calc(512px-2rem)] mx-auto py-4 bg-blue-600 text-white font-bold rounded-2xl text-base hover:bg-blue-700 transition-colors">
-          {isLast ? '查看今日总结 →' : '下一题 →'}
-        </button>
+        <div className="fixed bottom-20 left-4 right-4 max-w-[calc(512px-2rem)] mx-auto">
+          {isPaperMode ? (
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => {
+                  if (idx === 0) return
+                  resetQuestionView(Math.max(0, idx - 1))
+                }}
+                disabled={idx === 0}
+                className="py-4 border border-gray-200 bg-white text-gray-700 font-bold rounded-2xl text-base disabled:opacity-40"
+              >
+                上一题
+              </button>
+              <button onClick={handleNext}
+                className="py-4 bg-blue-600 text-white font-bold rounded-2xl text-base hover:bg-blue-700 transition-colors">
+                {isLast ? '去交卷检查' : '下一题'}
+              </button>
+            </div>
+          ) : (
+            <button onClick={handleNext}
+              className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl text-base hover:bg-blue-700 transition-colors">
+              {isLast ? '查看今日总结 →' : '下一题 →'}
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
@@ -503,4 +1651,3 @@ function CustomDiagnosisButton({ questionContent, correctAnswer, myAnswer }: {
     </div>
   )
 }
-

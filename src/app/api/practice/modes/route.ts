@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
         isLastSlowCorrect: true,
         isStockified: false,
       },
-      include: { question: { select: { id: true, type: true, content: true, options: true, answer: true, analysis: true, sharedAiAnalysis: true } } },
+      include: { question: { select: { id: true, type: true, content: true, questionImage: true, options: true, answer: true, analysis: true, sharedAiAnalysis: true } } },
       orderBy: { masteryPercent: 'desc' },
       take: 20,
     })
@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
           { reasonTag: tag },
         ] : [{ aiReasonTag: { not: null } }],
       },
-      include: { question: { select: { id: true, type: true, content: true, options: true, answer: true, analysis: true, sharedAiAnalysis: true } } },
+      include: { question: { select: { id: true, type: true, content: true, questionImage: true, options: true, answer: true, analysis: true, sharedAiAnalysis: true } } },
       orderBy: { masteryPercent: 'asc' },
       take: 8,
     })

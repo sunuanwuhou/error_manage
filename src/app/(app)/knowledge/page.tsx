@@ -33,21 +33,42 @@ export default function KnowledgePage() {
   const [showForm, setShowForm] = useState(false)
   const [typeFilter, setTypeFilter] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
 
   useEffect(() => {
-    fetch('/api/ai/config').then(r => r.json()).then(setAiConfig)
+    fetch('/api/ai/config').then(r => r.json()).then(setAiConfig).catch(() => {})
     loadEntries()
   }, [typeFilter])
 
   function loadEntries() {
     setLoading(true)
+    setError('')
     const url = `/api/knowledge${typeFilter ? `?type=${encodeURIComponent(typeFilter)}` : ''}`
-    fetch(url).then(r => r.json()).then(data => { setEntries(data); setLoading(false) })
+    fetch(url)
+      .then(async r => {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error ?? '知识库加载失败')
+        setEntries(Array.isArray(data) ? data : [])
+        setLoading(false)
+      })
+      .catch((e: any) => {
+        setEntries([])
+        setError(e?.message ?? '知识库加载失败')
+        setLoading(false)
+      })
   }
 
   async function deleteEntry(id: string) {
     if (!confirm('删除这条知识？')) return
-    await fetch(`/api/knowledge?id=${id}`, { method: 'DELETE' })
+    setMessage('')
+    const res = await fetch(`/api/knowledge?id=${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setError(data.error ?? '删除失败')
+      return
+    }
+    setMessage('已删除该知识条目')
     loadEntries()
   }
 
@@ -100,9 +121,21 @@ export default function KnowledgePage() {
 
       <p className="text-xs text-gray-400 mb-3">共 {entries.length} 条解法模式</p>
 
+      {message && (
+        <div className="mb-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+          {message}
+        </div>
+      )}
+
+      {error && !loading && (
+        <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+          {error}
+        </div>
+      )}
+
       {loading ? (
         <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-24 bg-gray-100 rounded-2xl animate-pulse" />)}</div>
-      ) : entries.length === 0 ? (
+      ) : !error && entries.length === 0 ? (
         <div className="text-center py-12 text-gray-400">
           <p className="text-4xl mb-3">🧪</p>
           <p className="font-medium">还没有知识库条目</p>

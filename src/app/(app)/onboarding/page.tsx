@@ -33,24 +33,35 @@ export default function OnboardingPage() {
   const [examDate, setExamDate]   = useState('')
   const [dailyGoal, setDailyGoal] = useState(70)
   const [saving, setSaving]       = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   const hints = SCORE_HINTS[examType]
 
   async function handleFinish() {
     setSaving(true)
-    await fetch('/api/onboarding', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        examType,
-        targetProvince: examType === 'sheng_kao' ? province : undefined,
-        targetScore,
-        examDate: examDate || undefined,
-        dailyGoal,
-      }),
-    })
-    setSaving(false)
-    router.push('/dashboard')
+    setSaveError('')
+    try {
+      const res = await fetch('/api/onboarding', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          examType,
+          targetProvince: examType === 'sheng_kao' ? province : undefined,
+          targetScore,
+          examDate: examDate || undefined,
+          dailyGoal,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error ?? '保存失败，请稍后重试')
+      }
+      router.push('/dashboard')
+    } catch (error: any) {
+      setSaveError(error?.message ?? '保存失败，请稍后重试')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -74,6 +85,7 @@ export default function OnboardingPage() {
                 <button
                   key={t.value}
                   onClick={() => setExamType(t.value)}
+                  data-testid={`onboarding-exam-type-${t.value}`}
                   className={`w-full text-left px-4 py-4 rounded-2xl border-2 transition-colors
                     ${examType === t.value
                       ? 'border-blue-500 bg-blue-50'
@@ -101,6 +113,7 @@ export default function OnboardingPage() {
 
             <button
               onClick={() => setStep(2)}
+              data-testid="onboarding-step-1-next"
               className="w-full mt-6 py-4 bg-blue-600 text-white font-bold rounded-2xl"
             >
               下一步
@@ -157,10 +170,13 @@ export default function OnboardingPage() {
 
             <div className="flex gap-3">
               <button onClick={() => setStep(1)}
+                data-testid="onboarding-step-2-back"
                 className="flex-1 py-3 border border-gray-200 text-gray-600 font-medium rounded-2xl">
                 上一步
               </button>
-              <button onClick={() => setStep(3)}
+              <button
+                onClick={() => setStep(3)}
+                data-testid="onboarding-step-2-next"
                 className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-2xl">
                 下一步
               </button>
@@ -220,17 +236,22 @@ export default function OnboardingPage() {
 
             <div className="flex gap-3">
               <button onClick={() => setStep(2)}
+                data-testid="onboarding-step-3-back"
                 className="flex-1 py-3 border border-gray-200 text-gray-600 font-medium rounded-2xl">
                 上一步
               </button>
               <button
                 onClick={handleFinish}
+                data-testid="onboarding-submit"
                 disabled={saving}
                 className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-2xl disabled:opacity-50"
               >
                 {saving ? '保存中...' : '开始备考 🚀'}
               </button>
             </div>
+            {saveError && (
+              <p className="mt-3 text-sm text-red-500">{saveError}</p>
+            )}
           </div>
         )}
       </div>

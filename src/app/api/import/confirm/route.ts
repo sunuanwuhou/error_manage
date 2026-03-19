@@ -5,6 +5,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { inferPaperQuestionOrder } from '@/lib/papers'
+import { buildFingerprint, normalizeText, qualityCheck, shouldReplaceExisting, type DuplicateMode } from '@/lib/import/duplicate-policy'
 import { z } from 'zod'
 import type { ParsedQuestion } from '@/lib/parsers/pdf-parser'
 
@@ -13,44 +15,17 @@ const schema = z.object({
   srcYear:     z.string().optional(),
   srcProvince: z.string().optional(),
   srcSession:  z.string().optional(),
+  srcOrigin:   z.string().optional(),
+  duplicateMode: z.enum(['skip', 'replace_low_quality', 'force_replace']).optional(),
   addToErrors: z.array(z.number()).optional(),
+  selected:    z.array(z.number()).optional(),
 })
 
-// ── 质检评分：判断一道题的解析质量 ─────────────────────────────────
-function qualityCheck(q: ParsedQuestion): {
-  score:    number   // 0-100
-  issues:   string[]
-} {
-  const issues: string[] = []
-  let score = 100
-
-  // 题目太短（可能截断）
-  if (q.content.length < 20) { issues.push('题目过短，可能截断'); score -= 30 }
-
-  // 选项数量不对
-  if (q.options.length < 4)  { issues.push(`选项只有${q.options.length}个`); score -= 20 }
-
-  // 没有答案
-  if (!q.answer)             { issues.push('缺少答案'); score -= 15 }
-
-  // 答案不合法
-  if (q.answer && !/^[ABCD]$/.test(q.answer)) { issues.push(`答案格式异常: ${q.answer}`); score -= 15 }
-
-  // 选项字母不连续（如只有A、C，跳过了B）
-  if (q.options.length > 0) {
-    const letters = q.options.map(o => o.charAt(0)).sort()
-    const expected = ['A','B','C','D'].slice(0, letters.length)
-    if (JSON.stringify(letters) !== JSON.stringify(expected)) {
-      issues.push('选项字母不连续'); score -= 10
-    }
-  }
-
-  // 题目内容包含选项文字（说明选项没有正确拆分）
-  if (/[AB]\.[^\n]{2,}[CD]\./.test(q.content)) {
-    issues.push('选项可能混入题目正文'); score -= 20
-  }
-
-  return { score: Math.max(0, score), issues }
+interface ImportedPayloadQuestion extends ParsedQuestion {
+  examType: string
+  srcName: string
+  srcOrigin?: string
+  index?: number
 }
 
 export async function POST(req: NextRequest) {
@@ -62,19 +37,27 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: '参数错误' }, { status: 400 })
   const d = parsed.data
 
-  let questions: Array<ParsedQuestion & { examType: string; srcName: string }>
+  let questions: ImportedPayloadQuestion[]
   try {
     questions = JSON.parse(Buffer.from(d.payload, 'base64').toString('utf-8'))
   } catch {
     return NextResponse.json({ error: 'payload 解析失败，请重新上传' }, { status: 400 })
   }
 
+  if (d.selected) {
+    const selectedSet = new Set(d.selected)
+    questions = questions.filter(q => q.index != null && selectedSet.has(q.index))
+  }
+
   const addSet          = new Set(d.addToErrors ?? [])
   const importedIds:    string[] = []
   const qualityReport:  Array<{ no: string; score: number; issues: string[] }> = []
+  const payloadFingerprints = new Set<string>()
+  const duplicateMode: DuplicateMode = d.duplicateMode ?? 'skip'
 
   let imported      = 0
   let skipped       = 0
+  let overwritten   = 0
   let addedToErrors = 0
   let lowQuality    = 0
 
@@ -84,6 +67,15 @@ export async function POST(req: NextRequest) {
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i]
     if (!q.content || q.content.length < 5) continue
+    const sourceQuestionNo = q.no?.trim() || null
+    const sourceQuestionOrder = inferPaperQuestionOrder(sourceQuestionNo) ?? (i + 1)
+    const sourceExamSession = d.srcSession ?? q.srcName ?? null
+    const fingerprint = buildFingerprint(q)
+    if (payloadFingerprints.has(fingerprint)) {
+      skipped++
+      continue
+    }
+    payloadFingerprints.add(fingerprint)
 
     // 质检
     const { score, issues } = qualityCheck(q)
@@ -96,21 +88,97 @@ export async function POST(req: NextRequest) {
     typeCount[q.type] = (typeCount[q.type] ?? 0) + 1
 
     try {
-      const existing = await prisma.question.findFirst({
-        where:  { content: q.content },
-        select: { id: true },
+      const candidates = await prisma.question.findMany({
+        where: {
+          isFromOfficialBank: true,
+          type: q.type,
+          examType: q.examType ?? 'common',
+          OR: [
+            { content: q.content },
+            {
+              srcExamSession: d.srcSession ?? q.srcName ?? null,
+              srcYear: d.srcYear ?? null,
+              srcProvince: d.srcProvince ?? null,
+            },
+          ],
+        },
+        select: {
+          id: true,
+          content: true,
+          options: true,
+          answer: true,
+          analysis: true,
+          type: true,
+          srcExamSession: true,
+          srcQuestionNo: true,
+          srcQuestionOrder: true,
+        },
+      })
+
+      const existing = candidates.find(item => {
+        const existingFingerprint = [
+          normalizeText(item.content).slice(0, 180),
+          (() => {
+            try {
+              const parsed = JSON.parse(item.options ?? '[]')
+              return Array.isArray(parsed) ? parsed.map(opt => normalizeText(String(opt))).join('|') : ''
+            } catch {
+              return ''
+            }
+          })(),
+          item.answer || '',
+          item.type || '',
+        ].join('::')
+        return existingFingerprint === fingerprint || normalizeText(item.content) === normalizeText(q.content)
       })
 
       let questionId: string
 
       if (existing) {
         questionId = existing.id
-        skipped++
+        const shouldReplace = shouldReplaceExisting(duplicateMode, q, existing)
+
+        if (shouldReplace) {
+          await prisma.question.update({
+            where: { id: existing.id },
+            data: {
+              content: q.content,
+              questionImage: q.questionImage || null,
+              options: JSON.stringify(q.options),
+              answer: q.answer || '',
+              analysis: q.analysis || null,
+              type: q.type,
+              examType: q.examType ?? 'common',
+              srcYear: d.srcYear ?? null,
+              srcProvince: d.srcProvince ?? null,
+              srcExamSession: sourceExamSession,
+              srcOrigin: d.srcOrigin ?? q.srcOrigin ?? null,
+              srcQuestionNo: sourceQuestionNo,
+              srcQuestionOrder: sourceQuestionOrder,
+              isFromOfficialBank: true,
+              isPublic: true,
+            },
+          })
+          overwritten++
+        } else {
+          skipped++
+          const sameSource = existing.srcExamSession === sourceExamSession
+          if (sameSource && (!existing.srcQuestionNo || !existing.srcQuestionOrder)) {
+            await prisma.question.update({
+              where: { id: existing.id },
+              data: {
+                ...(existing.srcQuestionNo ? {} : { srcQuestionNo: sourceQuestionNo }),
+                ...(existing.srcQuestionOrder ? {} : { srcQuestionOrder: sourceQuestionOrder }),
+              },
+            })
+          }
+        }
       } else {
         const created = await prisma.question.create({
           data: {
             addedBy:            userId,
             content:            q.content,
+            questionImage:      q.questionImage || null,
             options:            JSON.stringify(q.options),
             answer:             q.answer || '',
             analysis:           q.analysis || null,
@@ -118,7 +186,10 @@ export async function POST(req: NextRequest) {
             examType:           q.examType ?? 'common',
             srcYear:            d.srcYear ?? null,
             srcProvince:        d.srcProvince ?? null,
-            srcExamSession:     d.srcSession ?? q.srcName ?? null,
+            srcExamSession:     sourceExamSession,
+            srcOrigin:          d.srcOrigin ?? q.srcOrigin ?? null,
+            srcQuestionNo:      sourceQuestionNo,
+            srcQuestionOrder:   sourceQuestionOrder,
             isFromOfficialBank: true,
             isPublic:           true,
           },
@@ -128,7 +199,7 @@ export async function POST(req: NextRequest) {
         imported++
       }
 
-      if (addSet.has(i) && questionId) {
+      if (q.index != null && addSet.has(q.index) && questionId) {
         const alreadyIn = await prisma.userError.findUnique({
           where: { userId_questionId: { userId, questionId } },
         })
@@ -180,6 +251,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     imported,
     skipped,
+    overwritten,
     addedToErrors,
     lowQuality,
     total: questions.length,
@@ -207,17 +279,29 @@ async function rebuildExamTopicStats(
 
   for (const row of allByType) {
     const frequency = row._count.id / total
-    // upsert：有则更新频率，无则创建
-    await prisma.examTopicStats.upsert({
-      where:  { examType_skillTag: { examType, skillTag: row.type } },
-      update: { frequency, questionCount: row._count.id, updatedAt: new Date() },
-      create: {
+    const existing = await prisma.examTopicStats.findFirst({
+      where: { examType, srcProvince: null, skillTag: row.type },
+      select: { id: true },
+    })
+
+    if (existing) {
+      await prisma.examTopicStats.update({
+        where:  { id: existing.id },
+        data:   { frequency, totalCount: row._count.id, updatedAt: new Date() },
+      })
+      continue
+    }
+
+    await prisma.examTopicStats.create({
+      data: {
         examType,
+        srcProvince:   null,
         skillTag:      row.type,
         sectionType:   row.type,
         frequency,
-        questionCount: row._count.id,
-        difficulty:    0.5,
+        totalCount:    row._count.id,
+        avgDifficulty: 0.5,
+        lastExamYear:  srcYear ? Number(srcYear) : null,
       },
     })
   }

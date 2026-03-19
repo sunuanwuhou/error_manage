@@ -29,10 +29,24 @@ export default function SpecialModesPage() {
   useEffect(() => {
     if (!mode) {
       // 首页：列出可用错因
-      fetch('/api/practice/modes').then(r => r.json()).then(data => { setTags(data); setLoading(false) })
+      fetch('/api/practice/modes')
+        .then(async r => {
+          const data = await r.json()
+          if (!r.ok) throw new Error(data.error ?? '专项模式加载失败')
+          setTags(Array.isArray(data) ? data : [])
+          setLoading(false)
+        })
+        .catch(() => setLoading(false))
     } else {
       const url = `/api/practice/modes?mode=${mode}${tag ? `&tag=${encodeURIComponent(tag)}` : ''}`
-      fetch(url).then(r => r.json()).then(data => { setItems(data.items ?? []); setLoading(false) })
+      fetch(url)
+        .then(async r => {
+          const data = await r.json()
+          if (!r.ok) throw new Error(data.error ?? '专项题目加载失败')
+          setItems(data.items ?? [])
+          setLoading(false)
+        })
+        .catch(() => setLoading(false))
     }
   }, [mode, tag])
 
@@ -135,7 +149,7 @@ export default function SpecialModesPage() {
         })}
       </div>
 
-      <Link href={`/practice?mode=${mode}${tag ? `&tag=${encodeURIComponent(tag)}` : ''}&from=special`}
+      <Link href={`/practice/focused?mode=${mode}${tag ? `&tag=${encodeURIComponent(tag)}` : ''}`}
         className="block w-full py-4 bg-blue-600 text-white font-bold rounded-2xl text-center text-base">
         开始专项训练 →
       </Link>

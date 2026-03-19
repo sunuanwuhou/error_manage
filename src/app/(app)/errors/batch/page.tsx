@@ -25,6 +25,7 @@ export default function BatchEntryPage() {
   const [rows, setRows]         = useState<BatchRow[]>([emptyRow()])
   const [srcName, setSrcName]   = useState('')  // 来源，如"2024年国考"
   const [examType, setExamType] = useState('guo_kao')
+  const [showMeta, setShowMeta] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult]     = useState<{ done: number; skipped: number } | null>(null)
   const inputRefs = useRef<(HTMLInputElement | null)[][]>([])
@@ -36,6 +37,16 @@ export default function BatchEntryPage() {
       setRows(r => [...r, emptyRow()])
     }
   }, [rows])
+
+  useEffect(() => {
+    fetch('/api/onboarding')
+      .then(async res => {
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) return
+        setExamType(data.examType || 'guo_kao')
+      })
+      .catch(() => {})
+  }, [])
 
   function setCell(rowIdx: number, field: keyof BatchRow, value: string) {
     setRows(rows => rows.map((r, i) => i === rowIdx ? { ...r, [field]: value } : r))
@@ -130,29 +141,47 @@ export default function BatchEntryPage() {
 
       {/* 来源配置 */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="flex items-center justify-between gap-3">
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">来源名称</label>
-            <input
-              value={srcName}
-              onChange={e => setSrcName(e.target.value)}
-              placeholder="如：2024年国考行测"
-              className="w-full px-3 py-2 border border-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-            />
+            <p className="text-sm font-medium text-gray-800">来源信息</p>
+            <p className="text-xs text-gray-400 mt-1">
+              默认按 {examType === 'guo_kao' ? '国考' : examType === 'sheng_kao' ? '省考' : '统考'} 录入
+              {srcName ? ` · ${srcName}` : ''}
+            </p>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">考试类型</label>
-            <select
-              value={examType}
-              onChange={e => setExamType(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-            >
-              <option value="guo_kao">国考</option>
-              <option value="sheng_kao">省考</option>
-              <option value="tong_kao">统考</option>
-            </select>
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowMeta(v => !v)}
+            className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600"
+          >
+            {showMeta ? '收起' : '修改'}
+          </button>
         </div>
+        {showMeta && (
+          <div className="grid grid-cols-2 gap-3 mt-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">来源名称</label>
+              <input
+                value={srcName}
+                onChange={e => setSrcName(e.target.value)}
+                placeholder="如：2024年国考行测"
+                className="w-full px-3 py-2 border border-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">考试类型</label>
+              <select
+                value={examType}
+                onChange={e => setExamType(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              >
+                <option value="guo_kao">国考</option>
+                <option value="sheng_kao">省考</option>
+                <option value="tong_kao">统考</option>
+              </select>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 表头 */}

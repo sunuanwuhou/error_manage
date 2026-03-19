@@ -21,6 +21,12 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+
 # Cloudflare Tunnel 运行时文件
 .tunnel-url
 .tunnel-pid
+.runtime/

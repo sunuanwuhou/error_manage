@@ -18,13 +18,21 @@ export async function GET(req: NextRequest) {
 
   const where: any = { isPublic: true }
   if (type) where.type = type
-  if (q)    where.content = { contains: q }  // Phase 2 升级为 tsvector 全文检索
+  if (q) {
+    where.OR = [
+      { content: { contains: q } },
+      { subtype: { contains: q } },
+      { sub2: { contains: q } },
+      { skillTags: { contains: q } },
+      { srcExamSession: { contains: q } },
+    ]
+  }
 
   const questions = await prisma.question.findMany({
     where,
     select: {
       id: true, content: true, type: true, subtype: true,
-      answer: true, options: true, analysis: true,
+      answer: true, options: true, analysis: true, questionImage: true,
       sharedAiAnalysis: true, examType: true, srcYear: true,
     },
     orderBy: { createdAt: 'desc' },

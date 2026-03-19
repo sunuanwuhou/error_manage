@@ -1,8 +1,36 @@
 'use client'
 // src/app/(app)/import/screenshot/page.tsx — B6: 截图识别录题
 
-import { useState, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+
+type DuplicateMode = 'skip' | 'replace_low_quality' | 'force_replace'
+
+function encodePayload(question: {
+  content: string
+  options: string[]
+  answer?: string
+  analysis?: string
+  type?: string
+  questionImage?: string
+  warnings?: string[]
+}, examType: string) {
+  const bytes = new TextEncoder().encode(JSON.stringify([{
+    index: 0,
+    no: '1',
+    content: question.content,
+    questionImage: question.questionImage ?? '',
+    options: question.options ?? [],
+    answer: question.answer ?? '',
+    analysis: question.analysis ?? '',
+    type: question.type ?? '判断推理',
+    examType,
+    srcName: '截图OCR',
+    srcOrigin: 'screenshot_ocr',
+  }]))
+  const binary = Array.from(bytes, byte => String.fromCharCode(byte)).join('')
+  return btoa(binary)
+}
 
 export default function ScreenshotPage() {
   const router    = useRouter()
@@ -13,6 +41,19 @@ export default function ScreenshotPage() {
   const [error, setError]       = useState('')
   const [saving, setSaving]     = useState(false)
   const [myAnswer, setMyAnswer] = useState('A')
+  const [examType, setExamType] = useState('common')
+  const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>('replace_low_quality')
+
+  useEffect(() => {
+    fetch('/api/onboarding')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.examType) {
+          setExamType(data.examType)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   async function handleFile(file: File) {
     const url = URL.createObjectURL(file)
@@ -22,11 +63,13 @@ export default function ScreenshotPage() {
 
     const form = new FormData()
     form.append('image', file)
+    form.append('examType', examType)
+    form.append('srcName', '截图OCR')
 
     try {
       const res  = await fetch('/api/import/screenshot', { method: 'POST', body: form })
       const data = await res.json()
-      if (data.error) { setError(data.error); return }
+      if (!res.ok || data.error) { setError(data.error ?? '识别失败'); return }
       setResult(data)
     } catch (e: any) {
       setError(e.message)
@@ -38,22 +81,31 @@ export default function ScreenshotPage() {
   async function handleSave() {
     if (!result) return
     setSaving(true)
-    const res = await fetch('/api/errors', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content:  result.content,
-        options:  result.options ?? [],
-        answer:   result.answer || 'A',
-        analysis: result.analysis,
-        type:     result.type ?? '判断推理',
-        myAnswer,
-        examType: 'common',
-      }),
-    })
-    setSaving(false)
-    if (res.ok) router.push('/errors')
-    else setError('保存失败')
+    setError('')
+    try {
+      const res = await fetch('/api/import/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          payload: encodePayload(result, examType),
+          srcSession: '截图OCR',
+          srcOrigin: 'screenshot_ocr',
+          duplicateMode,
+          selected: [0],
+          addToErrors: [0],
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setError(data.error ?? '保存失败')
+        return
+      }
+      router.push('/errors')
+    } catch (e: any) {
+      setError(e.message ?? '保存失败')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -105,6 +157,13 @@ export default function ScreenshotPage() {
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
             <p className="text-xs font-medium text-gray-500 mb-2">识别结果</p>
             <div className="space-y-3">
+              {result.questionImage && (
+                <img
+                  src={result.questionImage}
+                  alt="题目原图"
+                  className="w-full rounded-2xl border border-gray-100 shadow-sm"
+                />
+              )}
               <div>
                 <label className="text-xs text-gray-400">题型</label>
                 <select value={result.type} onChange={e => setResult((r: any) => ({ ...r, type: e.target.value }))}
@@ -128,7 +187,7 @@ export default function ScreenshotPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-gray-400">正确答案</label>
-                  <select value={result.answer} onChange={e => setResult((r: any) => ({ ...r, answer: e.target.value }))}
+                  <select value={result.answer || 'A'} onChange={e => setResult((r: any) => ({ ...r, answer: e.target.value }))}
                     className="w-full mt-1 px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
                     {['A','B','C','D'].map(l => <option key={l}>{l}</option>)}
                   </select>
@@ -144,9 +203,42 @@ export default function ScreenshotPage() {
             </div>
           </div>
 
+          {Array.isArray(result.warnings) && result.warnings.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-700 space-y-1">
+              {result.warnings.map((warning: string, index: number) => (
+                <p key={index}>{warning}</p>
+              ))}
+            </div>
+          )}
+
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+            <p className="text-xs font-medium text-gray-500 mb-2">发现重复时</p>
+            <div className="grid grid-cols-1 gap-2">
+              {[
+                { value: 'skip', label: '跳过', desc: '保留旧题，不覆盖。' },
+                { value: 'replace_low_quality', label: '覆盖低质量旧题', desc: '新识别结果明显更完整时更新旧题。' },
+                { value: 'force_replace', label: '强制覆盖', desc: '重复题直接用这次识别结果替换。' },
+              ].map(item => (
+                <button
+                  key={item.value}
+                  type="button"
+                  onClick={() => setDuplicateMode(item.value as DuplicateMode)}
+                  className={`rounded-2xl border px-3 py-3 text-left transition-colors ${
+                    duplicateMode === item.value
+                      ? 'border-blue-500 bg-blue-50'
+                      : 'border-gray-200 bg-white hover:border-gray-300'
+                  }`}
+                >
+                  <p className={`text-sm font-medium ${duplicateMode === item.value ? 'text-blue-700' : 'text-gray-700'}`}>{item.label}</p>
+                  <p className="mt-1 text-xs text-gray-400">{item.desc}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <button onClick={handleSave} disabled={saving}
             className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl disabled:opacity-50">
-            {saving ? '保存中...' : '保存到错题本'}
+            {saving ? '保存中...' : '导入题库并加入错题本'}
           </button>
         </div>
       )}

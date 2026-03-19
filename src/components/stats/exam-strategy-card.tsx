@@ -16,14 +16,30 @@ interface StrategyItem {
 export function ExamStrategyCard() {
   const [items, setItems]   = useState<StrategyItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch('/api/stats/exam-strategy').then(r => r.json()).then(data => {
-      setItems(data); setLoading(false)
-    })
+    fetch('/api/stats/exam-strategy')
+      .then(async r => {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error ?? '策略分析加载失败')
+        setItems(Array.isArray(data) ? data : [])
+        setLoading(false)
+      })
+      .catch((e: any) => {
+        setError(e?.message ?? '策略分析加载失败')
+        setLoading(false)
+      })
   }, [])
 
   if (loading) return <div className="h-40 bg-gray-100 rounded-2xl animate-pulse" />
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-4 text-sm text-red-600">
+        {error}
+      </div>
+    )
+  }
   if (items.length === 0) return null
 
   return (

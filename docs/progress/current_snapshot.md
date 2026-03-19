@@ -1,0 +1,402 @@
+# Current Snapshot
+
+Updated: 2026-03-19 20:05 CST
+
+## Current Goal
+
+- 把 `error_manage` 从“功能很多但闭环粗糙”推进到“主流程稳定、套卷像考试、进度能驱动行动、AI 真能反向影响训练策略”的阶段。
+- 同步推进 E2E 自动化，把 Playwright 从“能发现”推进到“主流程能真实跑通”。
+- 当前协作约定：
+  - 默认持续推进，不到当前目标闭环不收手
+  - 除非遇到真实阻塞、不可替代的外部信息缺失、或高风险操作确认，否则不主动打扰用户
+
+## What Changed
+
+- 文件导入的“带图题入库”链路补通了一轮，且已用真实题源直接验库。
+  - `src/lib/parsers/excel-parser.ts` 不再只读单元格文本，改为同时读取 `xlsx` drawing/media
+  - 现在会把 Excel 里的图片锚点按真实行号挂回题目
+  - `@t1` 这类占位符会回填为图片
+  - 资料分析里的 `资料` 行会把材料图继承给后续整组题
+  - 图推/选项图会合成一张 SVG 题图入库，避免继续丢图
+- Excel 题型识别规则继续收紧。
+  - 分部标题行不再被上一分部类型污染
+  - `数量关系 / 资料分析 / 判断推理 / 言语理解 / 常识判断` 现在优先按分部标题识别
+  - 样例文件已能稳定识别出 `20 / 40 / 10 / 40 / 20` 的分布
+- 已按用户要求直接清空题库并由我自己执行解析导入，不再依赖手工页面操作。
+  - 真实导入文件：`2022年国家公务员录用考试《行测》题（地市级网友回忆版）.xlsx`
+  - 已提权连本地 Postgres 执行：清 `review_records / practice_records / user_errors / import_jobs / paper_practice_sessions / questions`
+  - 随后直接写入 `questions`
+  - 实查结果：`130` 题入库，`35` 题带图，`资料分析 20/20` 带图
+  - 样本确认带图入库：`67 / 68 / 116 / 121 / 129 / 130`
+- 笔记模块继续升级为“复盘资产中心”的最小高价值版。
+  - `UserNote.subtype` 已用于笔记来源归档
+  - 笔记支持按来源和题型双重筛选
+  - 规律支持填写 `sourceErrorIds` 与 `domainExamples`
+  - 笔记页新增来源分布和规律来源完整度概览
+  - 一条内容现在能更清楚地知道“从哪来、归到哪、怎么找”
+- 修复了两个会直接伤主流程的 P1 问题。
+  - `/api/import/confirm` 现在会尊重 `selected: []`
+  - 用户在预览页全部取消勾选时，不会再意外全量导入
+  - `/api/notes` 与 `/api/insights` 现在都支持 `PATCH`
+  - 笔记 / 规律编辑链路已恢复正常
+- 笔记页做了一轮“学习资产化”收口。
+  - `notes` 与 `insights` 加入搜索
+  - 笔记支持按题型筛选，规律支持按类型筛选
+  - 规律现在支持编辑和删除
+  - 页面加载改为 `Promise.allSettled`
+  - 一侧接口失败时，不再拖垮另一侧内容
+  - 卡片元信息更明确：更新时间、隐私状态、规律应用次数
+- 笔记又往“复盘资产中心”推进了一版。
+  - `notes` 现在支持按来源归档和筛选（通用 / 错题复盘 / 套卷总结 / AI 草稿 / 临考提醒）
+  - `insights` 现在支持 `sourceErrorIds / domainExamples`
+  - 页面新增来源分布和来源完整度摘要
+- 类型检查链路做了去噪。
+  - `tsconfig.json` 去掉了对 `.next/types/**/*.ts` 的强依赖
+  - 这个仓库没有启用 typed routes，之前的 include 会导致“build 通过、tsc 假失败”
+  - 现在 `npx tsc --noEmit` 已能直接作为真实校验使用
+- “成熟度差距 + 数据质量”已单独沉淀成文档。
+  - 新增 `docs/progress/成熟度差距与数据质量分析.md`
+  - 明确记录：当前约 94% 完成度，距离成熟系统还差笔记资产化、导出完整性、自动回归深度、AI 提分闭环深度
+- 导出能力已推进到学习轨迹导出 `v1.1`。
+  - 在原 `user / userErrors / notes / insights / mockTests / sectionStats` 基础上
+  - 新增 `reviewRecords / practiceRecords / paperPracticeSessions / importJobs / activityLogs / analysisSnapshots / systemInsights / knowledgeEntries`
+- E2E 自动回归扩了一轮高价值用例。
+  - 新增设置保存回归
+  - 新增笔记 CRUD 回归
+  - 新增导入确认尊重选择回归
+- E2E 回归补齐了一批高价值主流程。
+  - 新增 settings 保存回归
+  - 新增 notes CRUD 回归
+  - 新增 import confirm 选择尊重回归
+  - 共享测试辅助文件已收口到 `tests/e2e/helpers.ts`
+- Cloudflare Tunnel 的本地外网访问经验已固化进项目。
+  - `/api/tunnel` 不再强依赖用户先手动安装 `cloudflared`
+  - 支持优先复用系统 `cloudflared`
+  - 若本机未安装且平台受支持，会自动下载官方二进制到 `.runtime/cloudflared/`
+  - 启动返回中新增 `binarySource` 与 `NEXTAUTH_URL` 不匹配提示
+- 管理员页 Tunnel Widget 已补强提示文案。
+  - 未安装 `cloudflared` 时，会提示“自动下载”能力而不是只提示 `brew install`
+  - 隧道启动后会明确提示当前 `NEXTAUTH_URL` 与临时域名不一致时的外网登录风险
+- README 已新增“本地外网访问”章节。
+  - 明确了本地服务启动、管理员页一键启动 Tunnel、临时地址特性
+  - 补充记录了 `NEXTAUTH_URL` 必须切到 tunnel 域名后，外网登录回调才更稳定
+- `.gitignore` 已忽略 `.runtime/`，避免自动下载的运行时二进制污染仓库
+- `AGENTS.md` 新增了 `Delivery Standard`。
+  - 默认要求：实现 -> 自测 -> 修复 -> 复测
+  - 未通过 `tsc` / `build` / 开发服务可用性验证，不算完成
+  - 新增一条经验固化：不能拿 `build` 通过或终端 `Ready` 代替真实页面可用
+- 配置退后台专项进一步收紧。
+  - app layout 现在只看 `User.onboardingCompletedAt`
+  - 旧的 `examDate` 启发式不再参与是否完成配置的判断
+  - `settings` 继续作为唯一完整配置入口
+  - `import` 继续静默带入配置，只在必要时展开调整
+- `GET /api/onboarding` 现在只回传 `onboardingCompletedAt` 作为完成态。
+  - 不再用旧配置字段拼凑完成状态
+  - `POST /api/onboarding` 继续保存配置并写入完成态
+- 历史账号配置完成态补齐。
+  - 如果旧账号已经配过目标，但缺少 `onboardingCompletedAt`
+  - layout 和 `GET /api/onboarding` 现在都会自动回填，避免用户被误判回引导页
+- 修复了导入确认里的 `addToErrors` 索引错位问题。
+  - 后端现在按题目的原始 `index` 判断是否加入错题本，不再因为过滤或顺序变化把题加错。
+- 修复了导入预览“看起来改了，实际没入库”的问题。
+  - 预览页编辑题干后，会同步改写真正提交的 `payload`。
+- onboarding 现在会真实处理保存失败。
+  - 之前提交后无论成功与否都直接跳 `dashboard`，现在会显示明确错误。
+- 引入了更可靠的 onboarding 完成态。
+  - 新增 `User.onboardingCompletedAt`
+  - 保存配置时会写入
+  - GET 接口也兼容旧数据的回退判断
+- 套卷增加了本地会话恢复能力。
+  - 能检测上次做到第几题
+  - 支持继续作答
+  - 支持放弃进度重新开始
+  - 交卷后会清理本地套卷会话
+- 套卷继续向“考试流”推进了一轮。
+  - 总结页现在有整卷复盘
+  - 展示完成率、已作答/未作答、整卷用时、存疑题号、未作答题号
+  - 支持“再做一遍这套卷”
+- 套卷正式会话已经落地到后端。
+  - 不再只靠浏览器 `localStorage`
+  - 开始套卷时会创建或恢复后端会话
+  - 会持久化当前题号、已答题、存疑题、答案摘要
+  - 退出后重新进入同一套卷可继续
+  - 交卷后会话标记完成
+- 套卷题卡开始支持按模块分组。
+  - 交卷检查页题卡已按 `题型 / 子模块` 分组展示
+  - 套卷答题中的题号带也已按模块分组
+  - 整套练习不再只是单条长题号，更接近按模块推进的考试视角
+- 套卷模块感继续加深。
+  - 答题页现在会显示“当前模块”的已做 / 未做 / 存疑进度
+  - 总结页新增“模块表现”和“优先回看的模块”
+  - 复盘不再只停留在大题型层
+- 进度页已经从“统计页”推进成“行动页”。
+  - 新增保守预测 / 乐观预测
+  - 新增“今天练习的价值”
+  - 新增“差距来自哪里”
+  - 新增“下一步建议”
+- AI 建议开始形成最小闭环。
+  - `SystemInsight` 已支持单独读取
+  - 分析讨论页可对系统建议执行应用 / 拒绝
+  - `daily_task_strategy` 已能反向影响 `daily-tasks`
+- 首页开始能感知 AI 已生效的训练策略。
+  - 如果 `daily_task_strategy` 正在生效，dashboard 会展示当前训练策略摘要
+  - 用户现在可以看到“今天为什么这样排题”
+- 导入页的“默认设置”做了降噪。
+  - 不再把导入配置卡长期顶在页面上
+  - 默认用摘要展示
+  - 需要时再展开调整
+- 设置页补上了第一版最小可用导出。
+  - 新增 `GET /api/export/data`
+  - 可导出用户自己的配置、错题、复习记录、笔记、洞察、模考、分段统计
+  - 设置页现在提供 `导出我的数据（JSON）`
+- `录入错题 / 批量录题` 继续去配置化。
+  - 两页都会默认读取用户已保存的考试类型
+  - 来源与年份信息改成摘要 + 可展开调整
+  - 不再把“配置”直接顶在主流程上
+- 登录 + onboarding 的 Playwright 冒烟测试开始落地。
+  - 新增稳定选择器：用户名、密码、登录按钮、onboarding 逐步按钮、最终提交按钮
+  - 新增 `tests/e2e/login-onboarding.spec.ts`
+  - 测试会先把 `admin` 账号重置回未完成 onboarding，再完整走一遍登录 -> onboarding -> 保存 -> dashboard
+- Playwright 冒烟已经完成第一批真实回归。
+  - `playwright.config.ts` 现在默认先 `build` 再起生产态服务
+  - 默认端口改为 `3100`，避免误命中手工调试用的 `3000`
+  - `webServer.env.NEXTAUTH_URL` 已显式对齐测试 `baseURL`
+  - 套卷用例已兼容“当前库里没有套卷”的空态，不再把数据前提写死成代码假设
+  - 当前 5 条 Playwright 冒烟全部通过
+- 本轮把“项目启动不了”的经验也固化了。
+  - `dev:restart` 在这个环境里仍可能假成功，不能只看日志
+  - 这次真实恢复链路是：先识别后台脚本不可靠，再修掉 `build` 暴露出的源码错误，最后用 `build + start` 恢复 `3000`
+  - 新增经验：启动失败必须区分脚本假成功、`.next` 产物缺失、和源码真报错
+- 顺手修了两处会阻塞启动的源码错误。
+  - [daily-tasks.ts](/Users/10030299/Documents/Playground/error_manage/src/lib/daily-tasks.ts) 去掉了 `activeInsightSummary` 的重复定义
+  - [stats/page.tsx](/Users/10030299/Documents/Playground/error_manage/src/app/(app)/stats/page.tsx) 收紧了 `strategy` 可空分支，恢复 `build`
+- 顺手收掉了一个会卡 `tsc` 的老问题。
+  - `src/lib/import/ocr.test.ts` 的相对导入改为当前 TS 解析兼容写法
+  - `src/lib/import/ocr.ts` 的递归工具函数补了显式返回类型
+- 图片题导入 / OCR 做了一轮专项收口。
+  - 新增 `src/lib/import/ocr.ts` 统一 OCR prompt、返回解析、题目清洗和 warning 规则
+  - `/api/ai/ocr` 与 `/api/import/screenshot` 现在复用同一套 OCR 识别逻辑，不再各自重复解析 JSON
+  - OCR 统一处理 markdown code fence、对象型 options、题干内联 `A/B/C/D` 选项、脏答案格式
+  - 截图导入页保存时改走 `/api/import/confirm`，真正进入题库去重 + 加错题本，而不是只绕到 `/api/errors`
+  - 截图导入页会展示 OCR warning；`录入错题` 页补上了 `res.ok` 和异常处理
+- 套卷模块识别做了首轮纠偏。
+  - 新增 `src/lib/paper-modules.ts`
+  - 套卷答题页和交卷检查页不再直接信任单题瞬时 `type/subtype`
+  - 现在会把被前后同一模块夹住的短误判块自动并回，避免题卡被切成多个错误模块段
+  - 套卷总结 API 也已切到同一套规则，`模块表现 / 优先回看的模块` 不再和交卷检查使用不同口径
+- 受限环境改动回传流程已固化。
+  - 新增 `docs/受限环境改动同步规范.md`
+  - `AGENTS.md` 已补“Restricted Environment Handoff”
+  - 后续在公司电脑或不能带源码的环境中，默认按 patch / 文字说明 / 手工复现三级策略执行
+- 重复题导入策略现在可选。
+  - `import` 预览页和 `import/screenshot` 页都支持 `跳过 / 覆盖低质量旧题 / 强制覆盖`
+  - 后端会单独统计 `overwritten`
+  - `覆盖低质量旧题` 只在新结果明显更完整、而旧题质量较差时更新
+- 导入 / OCR 最小回归测试已落地。
+  - 新增 `src/lib/import/ocr.test.mjs`
+  - 新增 `src/lib/import/duplicate-policy.test.mjs`
+  - 新增 `npm run test:import`
+  - 已覆盖：markdown fence JSON、对象型选项、题干内联选项拆分、显式 OCR error、重复题覆盖策略
+- 本轮验证结果更新。
+  - `npx tsc --noEmit` 通过
+  - `npm run build` 通过
+  - `npm run test:e2e` 通过（5/5）
+  - `npm run test:import` 通过
+
+## What Is Done
+
+- 本轮 P1 已修复：
+  - 导入确认空选择误导入：已修复
+  - 笔记 / 规律编辑方法不匹配：已修复
+- 笔记模块可靠性已前进一步：
+  - 搜索 / 筛选已上线
+  - 规律支持编辑 / 删除
+  - 单接口失败不再拖垮整页
+  - 笔记来源归档 / 筛选已上线
+  - 规律来源字段已上线
+- 本地外网访问链路已经实测跑通：
+  - 本地 `npm run dev` 可启动
+  - `http://127.0.0.1:3000` 返回 `307 -> /login`
+  - Cloudflare quick tunnel 可创建并返回 `trycloudflare.com` 临时域名
+- Tunnel 现在更接近“一键生成外网地址”：
+  - 没有 `cloudflared` 的支持平台可自动下载
+  - 管理员页已有更明确的状态和风险提示
+- 本地 PostgreSQL 开发流已经稳定：
+  - DB: `error_manage_dev`
+  - Prisma schema 已同步
+  - Prisma Client 已重新生成
+- 当前核心校验已通过：
+  - `npm run build`
+  - `npx tsc --noEmit`
+  - `npm run test:e2e`
+  - `npm run test:import`
+  - `http://127.0.0.1:3000/login` 可访问（当前由 `next start` 提供）
+- 当前已知高价值修复已落地：
+  - 导入确认空选择误导入
+  - 笔记 / 规律编辑链路
+  - 笔记页局部失败隔离
+  - 导入索引问题
+  - 导入编辑落库问题
+  - 图片 OCR 统一解析与清洗
+  - 套卷模块误识别导致的碎片化题卡分组
+  - 截图导入接入正式入库链路
+- 导入 / OCR 最小回归测试
+  - 笔记 / 规律编辑链路恢复
+  - 笔记页局部失败隔离
+  - 笔记 / 规律搜索与筛选
+  - 笔记来源组织与来源筛选
+  - onboarding 假成功问题
+  - 配置完成态统一问题
+  - 登录 / onboarding / 套卷列表 / 套卷进入 的 Playwright 冒烟自动化
+  - 套卷后端会话恢复问题
+  - 导入页配置降噪
+  - 进度页行动化升级
+  - 套卷总结强化
+  - `SystemInsight -> daily-tasks` 最小闭环
+  - dashboard 训练策略可见化
+  - 套卷模块级进度与复盘
+  - 最小可用 JSON 导出
+- 录题入口配置降噪
+  - 学习轨迹导出 v1.1
+  - 设置保存 E2E
+  - 笔记 CRUD E2E
+  - 导入确认选择尊重 E2E
+
+## What Is Still Open
+
+- “成熟系统”角度看，笔记模块仍未完全到位。
+  - 现在已经从“个人笔记区”推进到“有来源组织能力的复盘区”
+  - 但还不是完全的“复盘资产中心”
+  - 仍缺与题目/错题/套卷的强关联、复习提醒、标签化和自动沉淀入口
+- Tunnel 还没有做到“一键自动改 `NEXTAUTH_URL` 并重启服务”。
+  - 现在能一键出外网地址
+  - 但外网登录要稳定，仍需把 `.env.local` 的 `NEXTAUTH_URL` 手动切到当前 tunnel 域名后重启开发服务
+- `dev:restart` 在当前环境里仍不稳定。
+  - 前台 `npm run dev` 可以启动
+  - 但后台脚本仍可能在脱离会话后失效
+  - 当前交付以 `build + start` 可访问为准，后续还要继续收口 dev 后台链
+- 套卷虽已有后端持久化会话，但还没有完整的“正式考试模式”。
+  - 仍缺更完整的整卷计时体验
+  - 仍缺更成熟的题卡状态与跳题反馈
+  - 仍缺真正考试级交互细节
+- 配置降噪虽已推进，但还没做到全局彻底。
+  - 其他主流程仍需要继续排查是否还在重复暴露配置
+- Playwright 基础配置已经接好，而且第一批主流程冒烟已经跑通。
+  - 当前覆盖：未登录跳转、登录页渲染、登录 + onboarding、套卷列表、进入套卷练习、设置保存、笔记 CRUD、导入确认选择尊重
+  - 下一步不是继续接框架，而是扩到每日练习、套卷交卷总结、导出下载断言
+- 导入/导出主链路还没有完全收口。
+  - 导入已更可靠
+  - 导出已推进到学习轨迹导出 `v1.1`
+  - 但还缺更完整的迁移级恢复能力、失败明细、Excel / PDF / 管理备份等后续能力
+- 图片题原图仍没有完整持久化与展示链路。
+  - 当前已解决 OCR 识别与入库一致性
+  - 但图形题 / 资料图表题的原图本身还没有在题目、练习、错题页里稳定展示
+- AI 还没达到“提分策略引擎”级别。
+  - `SystemInsight` 已开始反向接入训练引擎，但还只是最小闭环
+  - 仍缺跨题归纳、周策略、预测分变化解释、用户可感知的持续策略反馈
+- 配置完成态已经统一并补齐历史账号，但还需要继续检查其他流程是否仍反复暴露配置。
+- 系统级自动回归还不够深。
+  - 当前已有 smoke + import tests
+  - 但导入确认、设置保存、笔记增删改、每日练习、套卷交卷总结还应继续扩成更完整的 E2E
+
+## Blockers / Risks
+
+- 这次已经验证过一个真实风险：开发服务可能出现“日志 Ready、PID 存在、但浏览器命中的是旧残留或样式异常页面”。
+  - 后续验证必须把“真实页面渲染正常”作为独立检查项
+- 启动失败往往不是单点问题。
+  - 这次是“后台脚本不稳 + `.next` 缺失 + 构建暴露源码错误”连续叠加
+  - 后续不要再把它笼统归类成一句“项目起不来”
+- 浏览器旧 session 仍可能和本地数据库用户不一致。
+  - 症状：`No User found` / `Record to update not found`
+  - 需要退出并重新登录本地账号
+- 当前工作区改动很多，主流程之间耦合较高。
+  - 后续继续改时要优先保证导入、套卷、设置三条主链不互相回归
+- 进度页和 AI 策略虽然已前进一步，但仍需和真实训练体验更紧地绑定。
+  - 否则用户会看到“有建议”，但还感受不到“今天该怎么练、为什么这么练”
+- Playwright 目前仍依赖本地账号和数据库状态。
+  - 这轮已经通过“重置 admin onboarding 状态 + 容忍套卷空态”降低脆弱性
+  - 后续继续补 E2E 时，仍建议把测试数据准备再工程化一层
+
+## Core Metrics
+
+- Active DB: `error_manage_dev`
+- Local web dev: `reachable on localhost:3000`
+- Production web on 3000: `reachable`
+- Cloudflare quick tunnel: `verified`
+- Tunnel auto-download fallback: `implemented for darwin/linux mainstream arches`
+- Prisma sync: `passed`
+- Production build: `passed`
+- Typecheck: `passed`
+- Playwright smoke suite: `passed (5/5)`
+- Import/OCR regression script: `passed`
+- Duplicate handling mode selector: `enabled`
+- Import add-to-errors index bug: `fixed`
+- Import preview edit persistence: `fixed`
+- OCR normalization: `enabled`
+- Screenshot import -> confirm pipeline: `enabled`
+- Onboarding false-success bug: `fixed`
+- Onboarding completion state unified: `fixed`
+- Paper backend session persistence: `enabled`
+- Paper module grouping: `enabled`
+- Paper module progress + review: `enabled`
+- Paper summary review: `enhanced`
+- Export my data (JSON): `enabled`
+- Stats action page upgrade: `shipped`
+- SystemInsight -> daily-tasks: `minimum loop enabled`
+- Dashboard strategy visibility: `enabled`
+- AI closed-loop into training engine: `in progress`
+
+## Environment Notes
+
+- Project path: `/Users/10030299/Documents/Playground/error_manage`
+- Tunnel runtime cache:
+  - `.runtime/cloudflared/cloudflared`
+  - 自动下载产物已加入 `.gitignore`
+- Database:
+  - Host: `127.0.0.1`
+  - Port: `5432`
+  - DB: `error_manage_dev`
+- Dev server target: `http://localhost:3000`
+- 当前可访问服务：
+  - `next start --hostname 127.0.0.1 -p 3000`
+- Local accounts:
+  - `admin / changeme123`
+  - `wesly / 748663`
+- If `tsc` suddenly reports lots of missing `.next/types/...` files while `next build` is running, treat it as a build-artifact timing issue first and rerun `tsc` after build completes.
+- `dev:restart` 在这个仓库里不能只看日志判断成功。
+  - 需要同时核对端口监听、实际进程、以及浏览器命中的页面是否是新服务
+  - 否则很容易误把旧残留服务当成最新代码
+- 当前环境里，`dev:restart` 仍可能假成功。
+  - 若用户只要立即可用，优先 `npm run build` 后再 `npm run start -- --hostname 127.0.0.1 -p 3000`
+  - 再单独处理后台 `dev` 脚本
+- `npx tsc --noEmit`、`npm run build`、`npm run test:e2e`、`npm run test:import` 在这轮后再次通过。
+- 本轮补充校验：
+  - `node --test --experimental-strip-types src/lib/paper-modules.test.mjs` 通过
+  - `npm run build` 通过
+  - 单独直接跑 `npx tsc --noEmit` 仍会受仓库现有 `.next/types` 产物缺失影响，不作为本轮新回归
+- Playwright 默认会起 `127.0.0.1:3100` 的生产态服务。
+  - `webServer` 已显式对齐 `NEXTAUTH_URL`
+  - 避免认证流程错误复用 `.env.local` 里的 `3000`
+- Playwright 相关依赖和浏览器已安装到本机。
+  - `@playwright/test` 已加入 `package.json`
+  - Chromium / headless shell 已下载到 `~/Library/Caches/ms-playwright`
+- 这轮重新确认：
+  - `npm run build` 通过
+  - `npx tsc --noEmit` 通过
+  - `npm run test:e2e` 通过（5/5）
+  - `npm run test:import` 通过（10/10）
+  - 本轮新增的三条 E2E：settings / notes / import-confirm 通过（5/5）
+
+## Next 3 Actions
+
+1. 继续升级笔记模块，让它从“稳定可用”进入“复盘资产中心”，优先补关联对象、来源、标签、复习属性。
+2. 继续补 E2E 主流程，优先覆盖导入上传/确认、设置保存、笔记 CRUD、每日练习、套卷交卷总结。
+3. 继续增强导出，让它从“第一版 JSON 备份”进入“可迁移学习轨迹导出”。
+
+## Resume Command
+
+- `/继续 error_manage`
+- 或：`项目在 /Users/10030299/Documents/Playground/error_manage，先读取 AGENTS.md 和 docs/progress/current_snapshot.md，然后继续最高优先级任务。`
+- 默认执行方式：
+  - 读取规则与快照后直接继续最高优先级任务
+  - 若无关键阻塞，不做过程型打断

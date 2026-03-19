@@ -31,6 +31,7 @@ export async function GET(req: NextRequest) {
           select: {
             id: true, content: true, options: true, answer: true,
             type: true, subtype: true, analysis: true,
+            questionImage: true,
             sharedAiAnalysis: true, sharedMemoryAnchor: true, skillTags: true,
           },
         },
@@ -67,6 +68,7 @@ export async function GET(req: NextRequest) {
       select: {
         id: true, content: true, options: true, answer: true,
         type: true, subtype: true, analysis: true,
+        questionImage: true,
         sharedAiAnalysis: true, sharedMemoryAnchor: true, skillTags: true,
       },
     })

@@ -9,6 +9,11 @@ interface TunnelStatus {
   running: boolean
   url: string | null
   pid: number | null
+  binarySource?: 'system' | 'downloaded'
+  nextAuthUrl?: string | null
+  nextAuthMatchesTunnel?: boolean
+  nextAuthWarning?: string | null
+  autoDownloadSupported?: boolean
 }
 
 export function TunnelWidget() {
@@ -42,7 +47,7 @@ export function TunnelWidget() {
       if (data.error) {
         alert(data.error + (data.hint ? `\n\n安装方式：\n${data.hint}` : ''))
       } else {
-        setStatus({ running: data.running, url: data.url, pid: data.pid })
+        setStatus(data)
       }
     } catch {
       alert('启动失败，请检查网络')
@@ -59,7 +64,15 @@ export function TunnelWidget() {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ action: 'stop' }),
       })
-      setStatus({ running: false, url: null, pid: null })
+      setStatus({
+        running: false,
+        url: null,
+        pid: null,
+        nextAuthUrl: status?.nextAuthUrl ?? null,
+        nextAuthMatchesTunnel: true,
+        nextAuthWarning: null,
+        autoDownloadSupported: status?.autoDownloadSupported,
+      })
     } finally {
       setLoading(false)
     }
@@ -118,18 +131,35 @@ export function TunnelWidget() {
           <p className="text-xs text-gray-400 mt-1">
             启动后获得 trycloudflare.com 随机域名，手机可直接访问
           </p>
-          <p className="text-xs text-gray-400 mt-0.5">
-            ⚠️ 需先安装：<code className="bg-gray-100 px-1 rounded">brew install cloudflared</code>
-          </p>
+          {status?.autoDownloadSupported ? (
+            <p className="text-xs text-gray-400 mt-0.5">
+              未安装 <code className="bg-gray-100 px-1 rounded">cloudflared</code> 时，管理员页会尝试自动下载官方二进制。
+            </p>
+          ) : (
+            <p className="text-xs text-gray-400 mt-0.5">
+              ⚠️ 当前平台不支持自动下载时，需先安装：<code className="bg-gray-100 px-1 rounded">brew install cloudflared</code>
+            </p>
+          )}
         </div>
       ) : (
         <p className="text-xs text-gray-400 mt-1 animate-pulse">正在启动，等待域名分配...</p>
       )}
 
+      {status?.running && status.nextAuthWarning && (
+        <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+          <p className="text-xs text-amber-700 leading-5">{status.nextAuthWarning}</p>
+          {status.nextAuthUrl && (
+            <p className="text-xs text-amber-700 mt-1">
+              当前配置：<code className="bg-amber-100 px-1 rounded">{status.nextAuthUrl}</code>
+            </p>
+          )}
+        </div>
+      )}
+
       {/* 提示：每次重启域名会变 */}
       {status?.running && (
         <p className="text-xs text-gray-400 mt-2">
-          ⚠️ 每次重启域名会变化，仅用于测试。固定域名需升级 Cloudflare Zero Trust。
+          ⚠️ 每次重启域名会变化，仅用于测试。{status.binarySource === 'downloaded' ? '本次使用的是自动下载的 cloudflared。' : ''} 固定域名需升级 Cloudflare Zero Trust。
         </p>
       )}
     </div>

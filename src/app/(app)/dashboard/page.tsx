@@ -16,6 +16,25 @@ interface DailyQueue {
   practiceQuestions: string[]
   totalTarget: number
   daysToExam: number | null
+  activeInsight?: {
+    id: string
+    paramKey: string
+    insightCategory: string
+    updatedAt: string
+  } | null
+  activeInsightSummary?: {
+    title: string
+    reason: string
+    bullets: string[]
+  } | null
+  strategySnapshot?: {
+    playbook?: {
+      title: string
+      reason: string
+      steps: string[]
+      nextStep: string
+    }
+  }
 }
 
 export default function DashboardPage() {
@@ -23,22 +42,35 @@ export default function DashboardPage() {
   const [queue, setQueue] = useState<DailyQueue | null>(null)
   const [loading, setLoading] = useState(true)
   const [errorCount, setErrorCount] = useState<number | null>(null)
+  const [loadError, setLoadError] = useState('')
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/daily-tasks').then(r => r.json()),
-      fetch('/api/errors?page=1').then(r => r.json()),
+      fetch('/api/daily-tasks').then(async r => {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error ?? '今日任务加载失败')
+        return data
+      }),
+      fetch('/api/errors?page=1').then(async r => {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error ?? '错题列表加载失败')
+        return data
+      }),
     ]).then(([q, e]) => {
       setQueue(q)
       setErrorCount(e.total ?? 0)
       setLoading(false)
-    }).catch(() => setLoading(false))
+    }).catch((error: any) => {
+      setLoadError(error?.message ?? '首页加载失败')
+      setLoading(false)
+    })
   }, [])
 
   const username     = (session?.user as any)?.name ?? '同学'
   const reviewCount  = queue?.reviewErrors.length ?? 0
   const practiceCount= queue?.practiceQuestions.length ?? 0
   const totalTasks   = reviewCount + practiceCount
+  const guardCount   = queue?.guardCount ?? 0
   const isColdStart  = errorCount === 0 && !loading
 
   return (
@@ -93,8 +125,84 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {queue?.activeInsightSummary && (
+        <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 mb-4">
+          <p className="text-sm font-semibold text-blue-900">{queue.activeInsightSummary.title}</p>
+          <p className="text-xs text-blue-700 mt-1">{queue.activeInsightSummary.reason}</p>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {queue.activeInsightSummary.bullets.map(bullet => (
+              <span key={bullet} className="rounded-full bg-white/80 px-2.5 py-1 text-xs text-blue-700 border border-blue-100">
+                {bullet}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {queue?.strategySnapshot?.playbook && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-gray-800">先这么做</p>
+              <p className="text-xs text-gray-400 mt-1">{queue.strategySnapshot.playbook.reason}</p>
+            </div>
+            <span className="text-xs px-2.5 py-1 rounded-full bg-gray-100 text-gray-600">起手顺序</span>
+          </div>
+          <div className="mt-4 space-y-2">
+            {queue.strategySnapshot.playbook.steps.map((step, index) => (
+              <div key={step} className="flex items-start gap-3 rounded-xl bg-gray-50 px-3 py-2">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-semibold text-blue-700">
+                  {index + 1}
+                </span>
+                <span className="text-sm text-gray-700 leading-6">{step}</span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-blue-700">
+            接下来：{queue.strategySnapshot.playbook.nextStep}
+          </p>
+        </div>
+      )}
+
+      {queue && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <p className="text-sm font-semibold text-gray-800">今天怎么练</p>
+              <p className="text-xs text-gray-400 mt-1">
+                {queue.mode === 'activation'
+                  ? `冲刺期优先激活可得分题，距离考试 ${queue.daysToExam ?? '—'} 天`
+                  : '建设期优先稳住底线，再把增量题推过门槛'}
+              </p>
+            </div>
+            <Link href="/stats" className="text-xs text-blue-500 underline">看完整解释</Link>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-xl bg-gray-50 px-3 py-2">
+              <p className="text-xs text-gray-400">总目标</p>
+              <p className="text-sm font-bold text-gray-900 tabular-nums">{queue.totalTarget} 道</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2">
+              <p className="text-xs text-gray-400">错题复盘</p>
+              <p className="text-sm font-bold text-gray-900 tabular-nums">{reviewCount} 道</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2">
+              <p className="text-xs text-gray-400">真题补位</p>
+              <p className="text-sm font-bold text-gray-900 tabular-nums">{practiceCount} 道</p>
+            </div>
+          </div>
+          <p className="text-xs text-gray-500 mt-3">
+            守卫复习 {guardCount} 道，系统会优先保底，再补增量。
+          </p>
+        </div>
+      )}
+
       {loading ? (
         <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-24 bg-gray-100 rounded-2xl animate-pulse" />)}</div>
+      ) : loadError ? (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-sm text-red-600">
+          {loadError}
+        </div>
       ) : (
         <>
           {/* O3: 错题复盘区块（独立分组）*/}
@@ -158,9 +266,12 @@ export default function DashboardPage() {
                   <a href="/import" className="text-xs text-blue-500 underline">导入真题</a>
                 </div>
               ) : (
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-3">
                   <span>{practiceCount} 道真题待练</span>
-                  <span className="text-xs text-gray-300">按考点频率排序</span>
+                  <div className="flex items-center gap-3">
+                    <Link href="/papers" className="text-xs text-blue-500 underline">套卷练习</Link>
+                    <span className="text-xs text-gray-300">按考点频率排序</span>
+                  </div>
                 </div>
               )}
             </div>

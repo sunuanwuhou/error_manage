@@ -23,32 +23,51 @@ interface TagOption { tag: string; count: number }
 export default function FocusedPracticePage() {
   const router     = useRouter()
   const params     = useSearchParams()
+  const mode       = params.get('mode') as 'focused' | 'timed' | null
   const [tag, setTag]             = useState(params.get('tag') ?? '')
   const [items, setItems]         = useState<FocusedItem[]>([])
   const [tags, setTags]           = useState<TagOption[]>([])
   const [idx, setIdx]             = useState(0)
-  const [timedMode, setTimedMode] = useState(false)
+  const [timedMode, setTimedMode] = useState(mode === 'timed')
   const [selected, setSelected]   = useState<string | null>(null)
   const [revealed, setRevealed]   = useState(false)
   const [timeLeft, setTimeLeft]   = useState(0)
   const [timeSpent, setTimeSpent] = useState(0)
   const [loading, setLoading]     = useState(true)
+  const [error, setError]         = useState('')
   const startRef  = useRef(Date.now())
   const timerRef  = useRef<NodeJS.Timeout>()
 
-  function load(t: string) {
+  function load(t: string, currentMode: 'focused' | 'timed' | null) {
     setLoading(true)
-    fetch(`/api/practice/focused?tag=${encodeURIComponent(t)}`)
-      .then(r => r.json())
+    setError('')
+    const url = currentMode === 'timed'
+      ? '/api/practice/modes?mode=timed'
+      : `/api/practice/focused?tag=${encodeURIComponent(t)}`
+    fetch(url)
+      .then(async r => {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error ?? '专项练习加载失败')
+        return data
+      })
       .then(data => {
-        setItems(data.errors ?? [])
+        setItems(data.errors ?? data.items ?? [])
         setTags(data.availableTags ?? [])
         setIdx(0); setSelected(null); setRevealed(false)
         setLoading(false)
       })
+      .catch((e: any) => {
+        setItems([])
+        setTags([])
+        setError(e?.message ?? '专项练习加载失败')
+        setLoading(false)
+      })
   }
 
-  useEffect(() => { load(tag) }, [tag])
+  useEffect(() => {
+    setTimedMode(mode === 'timed')
+    load(tag, mode)
+  }, [tag, mode])
 
   const current = items[idx]
   const opts: string[] = current?.question?.options ? JSON.parse(current.question.options) : []
@@ -81,6 +100,7 @@ export default function FocusedPracticePage() {
   }
 
   async function handleReveal(answer: string) {
+    if (!current) return
     clearInterval(timerRef.current)
     const spent = Math.round((Date.now() - startRef.current) / 1000)
     setTimeSpent(spent)
@@ -104,18 +124,33 @@ export default function FocusedPracticePage() {
   }
 
   function handleNext() {
-    if (idx >= items.length - 1) { router.push('/dashboard'); return }
+    if (idx >= items.length - 1) {
+      router.push(mode === 'timed' ? '/practice/special?mode=timed' : '/practice/special')
+      return
+    }
     setIdx(i => i + 1); setSelected(null); setRevealed(false)
   }
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-gray-400">加载中...</div>
 
+  if (error) {
+    return (
+      <div className="max-w-lg mx-auto px-4 pt-16 text-center">
+        <p className="text-4xl mb-3">⚠️</p>
+        <p className="font-medium text-gray-700">{error}</p>
+        <button onClick={() => router.push('/practice/special')} className="mt-6 px-6 py-3 border border-gray-200 rounded-2xl text-gray-600">
+          返回专项训练
+        </button>
+      </div>
+    )
+  }
+
   // 标签选择页
-  if (!tag || items.length === 0) {
+  if (mode !== 'timed' && (!tag || items.length === 0)) {
     return (
       <div className="max-w-lg mx-auto px-4 pt-4 pb-8">
         <div className="flex items-center gap-3 mb-6">
-          <button onClick={() => router.back()} className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center">←</button>
+          <button onClick={() => router.push('/practice/special')} className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center">←</button>
           <div>
             <h1 className="text-xl font-bold text-gray-900">聚焦模式</h1>
             <p className="text-xs text-gray-400 mt-0.5">集中攻克一个错因类型</p>
@@ -147,6 +182,19 @@ export default function FocusedPracticePage() {
     )
   }
 
+  if (mode === 'timed' && items.length === 0) {
+    return (
+      <div className="max-w-lg mx-auto px-4 pt-16 text-center">
+        <p className="text-4xl mb-3">⏱️</p>
+        <p className="font-medium text-gray-700">当前没有需要提速的题目</p>
+        <p className="text-sm text-gray-400 mt-1">当连续出现慢正确时，这里会自动生成专项提速队列。</p>
+        <button onClick={() => router.push('/practice/special')} className="mt-6 px-6 py-3 border border-gray-200 rounded-2xl text-gray-600">
+          返回专项训练
+        </button>
+      </div>
+    )
+  }
+
   const limit = SPEED_LIMITS[current?.question?.type ?? ''] ?? 90
   const timedLimit = timedMode ? Math.floor(limit * 0.6) : limit
   const timeRatio = timeLeft / timedLimit
@@ -156,10 +204,21 @@ export default function FocusedPracticePage() {
     <div className="max-w-lg mx-auto px-4 pt-4 pb-24">
       {/* 头部 */}
       <div className="flex items-center gap-3 mb-3">
-        <button onClick={() => setTag('')} className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center">←</button>
+        <button
+          onClick={() => {
+            if (mode === 'timed') {
+              router.push('/practice/special')
+              return
+            }
+            setTag('')
+          }}
+          className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center"
+        >
+          ←
+        </button>
         <div className="flex-1">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-gray-700">聚焦：{tag}</span>
+            <span className="text-sm font-medium text-gray-700">{timedMode ? '计时提速专项' : `聚焦：${tag}`}</span>
             <span className="text-xs text-gray-400">{idx + 1}/{items.length}</span>
           </div>
           <div className="h-1 bg-gray-100 rounded-full mt-1 overflow-hidden">

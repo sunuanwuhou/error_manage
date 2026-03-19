@@ -20,6 +20,10 @@ const submitSchema = z.object({
   isSlowCorrect:     z.boolean().default(false),
   thinkingInputType: z.enum(['text', 'sketch']).nullable().optional(),
   practiceMode:      z.enum(['quick', 'deep', 'focused', 'timed']).default('quick'),
+  selectedAnswer:    z.string().optional(),
+  sessionId:         z.string().optional(),
+  paperSessionId:    z.string().optional(),
+  paperQuestionIndex: z.number().int().nonnegative().optional(),
 })
 
 export async function POST(req: NextRequest) {
@@ -31,8 +35,13 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: '参数错误', details: parsed.error.flatten() }, { status: 400 })
 
   const data = parsed.data
+  if (data.source === 'practice') {
+    return handlePracticeSubmit(userId, data)
+  }
+
   const userError = await prisma.userError.findFirst({
     where: { id: data.userErrorId, userId },
+    include: { question: { select: { id: true, type: true, subtype: true } } },
   })
   if (!userError) return NextResponse.json({ error: '题目不存在' }, { status: 404 })
 
@@ -134,12 +143,13 @@ export async function POST(req: NextRequest) {
 
   // 异步任务（不阻塞响应）
   const asyncTasks: Promise<any>[] = []
+  const stockifiedUserErrorId = data.userErrorId
 
   // 首次存量化 → 记忆锚点
-  if (updates.isStockified && !userError.isStockified) {
+  if (updates.isStockified && !userError.isStockified && stockifiedUserErrorId) {
     asyncTasks.push(
       import('@/lib/memory-anchor').then(({ generateMemoryAnchor }) =>
-        generateMemoryAnchor(data.userErrorId)
+        generateMemoryAnchor(stockifiedUserErrorId)
       )
     )
   }
@@ -148,6 +158,21 @@ export async function POST(req: NextRequest) {
   asyncTasks.push(updateSectionStats(userId))
 
   Promise.allSettled(asyncTasks).catch(() => {})
+
+  logPracticeAnswer(userId, {
+    questionId:      userError.questionId,
+    questionType:    userError.question.type,
+    questionSubtype: userError.question.subtype ?? undefined,
+    masteryBefore:   userError.masteryPercent,
+    masteryAfter:    updates.masteryPercent,
+    isCorrect:       data.isCorrect,
+    timeSpent:       data.timeSpent,
+    isSlowCorrect:   data.isSlowCorrect,
+    thinkingVerdict: data.thinkingVerdict ?? undefined,
+    resultMatrix:    updates.resultMatrix,
+    practiceMode:    data.practiceMode,
+    reviewInterval:  updates.reviewInterval,
+  }, data.sessionId).catch(() => {})
 
   return NextResponse.json({
     success:          true,
@@ -250,12 +275,19 @@ async function markPracticeRecordDone(userId: string, questionId: string, isCorr
 
 // ── F2: 真题模式答题处理 ─────────────────────────────────────────
 async function handlePracticeSubmit(
-  req: any,
   userId: string,
   data: any
 ): Promise<Response> {
   const { questionId, isCorrect, timeSpent, isSlowCorrect } = data
   const { NextResponse } = await import('next/server')
+  const question = await prisma.question.findUnique({
+    where: { id: questionId },
+    select: { id: true, type: true, subtype: true },
+  })
+
+  if (!question) {
+    return NextResponse.json({ error: '题目不存在' }, { status: 404 })
+  }
 
   // 标记 PracticeRecord 为已练
   await prisma.practiceRecord.updateMany({
@@ -266,6 +298,19 @@ async function handlePracticeSubmit(
       nextShowAt: isCorrect ? new Date(Date.now() + 7 * 86400000) : null,
     },
   })
+
+  if (data.paperSessionId) {
+    const paperSessionUpdate: { lastAccessedAt: Date; currentIndex?: number } = {
+      lastAccessedAt: new Date(),
+    }
+    if (typeof data.paperQuestionIndex === 'number') {
+      paperSessionUpdate.currentIndex = data.paperQuestionIndex
+    }
+    await prisma.paperPracticeSession.updateMany({
+      where: { id: data.paperSessionId, userId, status: 'active' },
+      data: paperSessionUpdate,
+    })
+  }
 
   // 答错 → 自动创建 UserError（进入错题本，开始间隔复习）
   if (!isCorrect) {
@@ -296,6 +341,21 @@ async function handlePracticeSubmit(
       ).catch((e: Error) => console.error('[AI] 真题诊断失败：', e.message))
     }
 
+    logPracticeAnswer(userId, {
+      questionId,
+      questionType:    question.type,
+      questionSubtype: question.subtype ?? undefined,
+      masteryBefore:   existing?.masteryPercent ?? 0,
+      masteryAfter:    0,
+      isCorrect:       false,
+      timeSpent,
+      isSlowCorrect,
+      thinkingVerdict: data.thinkingVerdict ?? undefined,
+      resultMatrix:    '4',
+      practiceMode:    data.practiceMode,
+      reviewInterval:  1,
+    }, data.sessionId).catch(() => {})
+
     return NextResponse.json({
       success:          true,
       addedToErrorBook: true,
@@ -305,6 +365,21 @@ async function handlePracticeSubmit(
       wasStockifiedNow: false,
     })
   }
+
+  logPracticeAnswer(userId, {
+    questionId,
+    questionType:    question.type,
+    questionSubtype: question.subtype ?? undefined,
+    masteryBefore:   0,
+    masteryAfter:    100,
+    isCorrect:       true,
+    timeSpent,
+    isSlowCorrect,
+    thinkingVerdict: data.thinkingVerdict ?? undefined,
+    resultMatrix:    '1',
+    practiceMode:    data.practiceMode,
+    reviewInterval:  7,
+  }, data.sessionId).catch(() => {})
 
   // 答对 → 只记录结果，不进错题本
   return NextResponse.json({

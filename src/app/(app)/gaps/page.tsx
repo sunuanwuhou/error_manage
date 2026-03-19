@@ -23,21 +23,43 @@ export default function GapsPage() {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [queueing, setQueueing] = useState<string | null>(null)
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch('/api/analysis/gaps').then(r => r.json()).then(d => { setData(d); setLoading(false) })
+    fetch('/api/analysis/gaps')
+      .then(async r => {
+        const d = await r.json()
+        if (!r.ok) throw new Error(d.error ?? '盲区加载失败')
+        setData(d)
+        setLoading(false)
+      })
+      .catch((e: any) => {
+        setError(e?.message ?? '盲区加载失败')
+        setLoading(false)
+      })
   }, [])
 
   async function addToQueue(skillTag: string) {
     setQueueing(skillTag)
-    await fetch('/api/analysis/queue', {
+    const enqueue = await fetch('/api/analysis/queue', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'add', targetType: 'skill_tag', targetId: skillTag, priority: 0.8 }),
     })
+    if (!enqueue.ok) {
+      const data = await enqueue.json().catch(() => ({}))
+      setError(data.error ?? '加入分析失败')
+      setQueueing(null)
+      return
+    }
     // 刷新
     const res = await fetch('/api/analysis/gaps')
-    setData(await res.json())
+    const refreshed = await res.json()
+    if (!res.ok) {
+      setError(refreshed.error ?? '盲区刷新失败')
+    } else {
+      setData(refreshed)
+    }
     setQueueing(null)
   }
 
@@ -56,6 +78,12 @@ export default function GapsPage() {
           <p className="text-xs text-gray-400 mt-0.5">高频考点中从未练过的</p>
         </div>
       </div>
+
+      {error && (
+        <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+          {error}
+        </div>
+      )}
 
       {data?.message ? (
         <div className="text-center py-12 text-gray-400">
@@ -133,9 +161,9 @@ export default function GapsPage() {
                             {queueing === gap.skillTag ? '...' : '加入分析'}
                           </button>
                         )}
-                        <Link href={`/practice?type=${encodeURIComponent(gap.skillTag)}`}
+                        <Link href={`/search?type=${encodeURIComponent(gap.sectionType)}&q=${encodeURIComponent(gap.skillTag)}`}
                           className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-blue-700">
-                          去练
+                          去题库搜
                         </Link>
                       </div>
                     </div>

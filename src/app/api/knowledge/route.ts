@@ -25,17 +25,20 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const type = searchParams.get('type')
 
-  const entries = await prisma.$queryRawUnsafe<any[]>(`
-    SELECT id, "userId", "isPublic", "questionType", "methodName",
-           "applicableTypes", "triggerKeywords", "solutionSteps",
-           "exampleSolution", "qualityScore", "usageCount", "rawContent",
-           "aiExtractedAt", "createdAt"
-    FROM knowledge_entries
-    WHERE ("isPublic" = true OR "userId" = $1)
-    ${type ? `AND "questionType" = '${type.replace(/'/g, "''")}'` : ''}
-    ORDER BY "qualityScore" DESC, "usageCount" DESC
-    LIMIT 50
-  `, userId)
+  const entries = await prisma.knowledgeEntry.findMany({
+    where: {
+      OR: [
+        { isPublic: true },
+        { userId },
+      ],
+      ...(type ? { questionType: type } : {}),
+    },
+    orderBy: [
+      { qualityScore: 'desc' },
+      { usageCount: 'desc' },
+    ],
+    take: 50,
+  })
 
   return NextResponse.json(entries.map(e => ({
     ...e,
@@ -82,9 +85,9 @@ export async function DELETE(req: NextRequest) {
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: '缺少id' }, { status: 400 })
 
-  await prisma.$executeRawUnsafe(`
-    DELETE FROM knowledge_entries WHERE id = $1 AND "userId" = $2
-  `, id, userId)
+  await prisma.knowledgeEntry.deleteMany({
+    where: { id, userId },
+  })
 
   return NextResponse.json({ ok: true })
 }
