@@ -1,6 +1,6 @@
 # Current Snapshot
 
-Updated: 2026-03-19 20:05 CST
+Updated: 2026-03-20 15:10 CST
 
 ## Current Goal
 
@@ -11,6 +11,258 @@ Updated: 2026-03-19 20:05 CST
   - 除非遇到真实阻塞、不可替代的外部信息缺失、或高风险操作确认，否则不主动打扰用户
 
 ## What Changed
+
+- 2026-03-20 新固化：Docker 开发挂载 + 自动 Cloudflare Tunnel 已落地
+  - `docker-compose.dev.yml` 现在会同时启动 `app / db / tunnel`
+  - `app` 走源码挂载 + `next dev --hostname 0.0.0.0 -p 3000`
+  - `tunnel` 会把最新地址写到 `.runtime/tunnel-url.txt`
+  - 登录页会直接读取并展示“当前外网地址”，以后不需要再手动翻日志找域名
+  - 当前是 Quick Tunnel：适合临时分享，不适合作为稳定登录回调域名
+
+- 做了一轮全局文档清理和入口收口。
+  - `README.md` 已修正文档失效路径，并补充统一文档入口
+  - `docs/README.md` 已重写为按“快速恢复 / 第一次了解 / 继续开发”分层的导航页
+  - 新增对阶段性文档、历史说明文档、早期架构稿的状态说明，减少把旧口径当当前口径的风险
+  - `analysis-worker/ARCHITECTURE.md` 已明确标注为历史设计稿，并指向当前有效的 Codex 执行文档
+
+- `insight` 新增流开始正式收敛到知识树，不再以独立“规律心智”作为主落点。
+  - `POST /api/insights` 现在会同时把新内容沉淀到 `UserNote` 知识树
+  - 新知识点统一落到 `type=知识树`、`subtype=规则沉淀`
+  - 旧 `user_insight` 继续保留做兼容层，不影响历史数据读取
+  - 新知识点沉淀统一复用了 `src/lib/knowledge-notes.ts`
+  - 新增规则摘要会更明显地落到知识点体系，而不是继续强化独立规律入口
+- 这轮工程验证已经有明确结果。
+  - `npm run typecheck` 通过
+  - `npm run build` 通过
+
+- 前端双端布局开始从“纯手机壳”升级为“同页响应式”。
+  - `src/app/(app)/layout.tsx` 已加应用级 shell，PC 端支持左侧导航 + 右侧内容区
+  - `src/components/layout/navbar.tsx` 现在手机保留底部导航，桌面端切为侧边导航
+  - `src/app/globals.css` 已加桌面端统一容器放宽规则，减少逐页重写
+  - `src/app/(app)/dashboard/page.tsx` 已升级为 PC 双栏信息布局，手机仍保持单列
+  - 本轮工程验证：`npm run typecheck` 通过
+
+- 知识树主线又收了一轮，用户侧已经不再面对“笔记 / 规律”双轨。
+  - `/notes` 已重写成单轨“知识树”主视图
+  - 独立“规律卡”展示区已移除
+  - 历史 `UserInsight` 仍保留，但现在只以知识点下的“规则摘要 / 易错陷阱 / 公式记忆”内联呈现
+  - 练习页原“固化成规律”按钮已改成“补充规则摘要”，现在直接落到知识点草稿
+  - dashboard 底部快捷入口文案已改成“知识树”
+- 本轮工程验证已通过。
+  - `npm run typecheck` 通过
+  - `npm run build` 通过
+
+- 导入数据质量又做了一轮真实查库 + 修复。
+  - 并行查出当前库里这套卷只有 `125` 题，缺 `71 / 73 / 74 / 78 / 79`
+  - 同时存在旧导入残留：`72 / 75 / 76 / 77` 仍是 `A.A / B.B / C.C / D.D`
+  - `129` 仍是 `A.[图A]` 这类旧占位
+- `src/lib/parsers/excel-parser.ts` 继续收口图片选项清洗。
+  - 现在会把 `A.A / B.B / C.C / D.D` 这类图形题选项统一规范为 `A.见图`
+  - 也会把 `A.[图A]` 这类旧图片占位统一清洗为 `A.见图`
+- 已直接用最新解析结果修复当前题库，不再依赖用户手动重新导入。
+  - 对 `2022年国家公务员录用考试《行测》题（地市级网友回忆版）` 执行了按题号补齐 + 覆盖更新
+  - 本轮结果：`created 5 / updated 125`
+  - 修复后回到 `130` 题完整，无缺号，无脏图片选项残留
+- 修复后的查库结果再次确认。
+  - 当前整套：`130` 题
+  - 带图题：`35`
+  - 可疑图片占位：`0`
+  - 剩余 `12` 道“短题”均属合法短题（常识问法、类比/关系题等），不应再按截断题重罚
+- 已完成逐题审计，不再只是抽样检查。
+  - 新增 `scripts/audit-paper-import.mjs`
+  - 会逐题对比源 Excel 与数据库中的 `题号 / 题型 / 题干 / 选项 / 图片 / 答案`
+  - 本轮最终审计结果：`130/130` 对齐，`mismatchCount = 0`，`qualityIssueCount = 0`
+- 质量规则继续去误伤。
+  - `src/lib/import/duplicate-policy.ts` 已把合法短题（类比题、短问法常识题）从“疑似截断”中排除
+  - 这轮确认 `92 / 95 / 97 / 99 / 100` 这类短题都属于合法题干，不再误报
+- 知识树笔记 Phase 2 已继续推进。
+  - 知识页已从平铺卡片推进到真正的树形展开：一级 / 二级 / 三级 / 具体知识点
+  - 知识点下的关联错题数量现在可点击查看具体错题列表
+  - `/api/errors` 已支持 `ids` 批量查询，供知识点详情直接拉对应错题
+- “错题 -> 自动沉淀知识点”的挂载范围继续扩大。
+  - 复习提交答错后会自动挂知识点
+  - 真题练习答错并自动入错题本时会自动挂知识点
+  - 手动录入错题时会自动挂知识点
+  - 导入时勾选加入错题本的题也会自动挂知识点
+  - 新增统一挂载逻辑：`src/lib/knowledge-notes.ts`
+- 专项练习的体验继续向主练习统一。
+  - `practice/focused` 已支持草稿文本与草稿板
+  - 专项练习页现在也支持图片题展示，不再只显示纯文本
+
+- 笔记系统路线已正式切换到“知识树 + 错题挂载”。
+  - 新增 `docs/architecture/知识树笔记与错题挂载路线图.md`
+  - 明确后续不再把“笔记 / 规律”作为两个平行系统，而是统一收束到“知识点”层
+  - 知识树目标结构：一级 / 二级 / 三级 / 具体知识点，且知识点下可查看错题数量与错题列表
+- 已开始第一阶段实现。
+  - `UserNote` 已增加 `module2 / module3 / sourceErrorIds`
+  - `notes` 页面已从“笔记 & 规律切页”向“知识笔记主视图 + 规律卡作为附属区”收束
+  - 练习页生成笔记草稿时，已开始自动带入模块层级与错题来源
+  - `practice/focused` 也已补上草稿板，开始统一“所有练习模式都可写草稿”的体验
+
+- Codex 高频分析 worker 方案已正式写入项目。
+  - 新增 `docs/architecture/Codex高频分析执行方案.md`
+  - 明确了边界：`analysis_queue` 继续作为唯一任务状态源，Codex 负责高频执行，不把 ChatGPT Pro 当产品 API
+  - 第一阶段先做 `user_strategy_refresh`，后续再扩到 `paper_review_summary / user_error_diagnosis`
+- `analysis-worker` 已从设计稿推进到可运行雏形。
+  - 新增 `analysis-worker/src/index.mjs`
+  - 支持读取根项目 `.env/.env.local`
+  - 支持补齐过期的 `user_strategy_refresh` 任务
+  - 支持领取并消费一条队列任务
+  - 支持写入 `analysis_snapshots` 与高置信 `system_insights`
+- `analysis-worker` 已改为 `pg + SQL` 直连本地 Postgres。
+  - 根因确认：当前环境下 Prisma 可被 `psql` 成功连接的本地库，仍会报 `Can't reach database server`
+  - 为了优先跑通真实链路，worker 已切到更稳的 `pg` 访问层
+  - 根项目已新增 `pg` 依赖
+- `analysis-worker` 已开始切到 Codex 驱动协议。
+  - worker 不再以“本地规则分析”作为主协议
+  - 现在主路径是 `claim-and-export -> Codex result JSON -> apply-result`
+  - `.runtime/analysis/tasks / prompts / results` 已作为正式协议目录使用
+- 分析结果沉淀层已开始真正落库。
+  - `user_strategy_refresh` 完成后，不再只写快照和建议
+  - 现在会把核心策略方法固化到 `knowledge_entries`
+  - 若配置 `OPENAI_API_KEY`，会额外为策略知识生成 embedding 写入 `contentEmbedding`
+  - 若未配置，则优雅降级为结构化知识库，后续仍可按关键词和质量分检索
+- 策略分析已经开始消费历史知识，而不再只是单次规则计算。
+  - `user_strategy_refresh` 现在会先检索 `knowledge_entries` 中的 `策略分析` 条目
+  - 有 embedding 时优先走向量相似召回
+  - 没有 embedding 时降级为 `triggerKeywords` 关键词召回
+  - 命中的历史知识会进入 `analysis_snapshots.inputSummary.retrievedKnowledge`
+  - recommendations 也会带上 `supportingKnowledge`
+- Codex 高频分析链路第一次真实跑通。
+  - 已提权执行 `npm run analysis:worker`
+  - `analysis_queue` 中 `user_strategy_refresh` 已完成 `3` 条
+  - `analysis_snapshots` 已为 `admin_local / wesly_local` 写入策略快照
+  - `system_insights` 已为两个本地用户各写入一条 `daily_task_strategy`
+  - `knowledge_entries` 已为两个本地用户各沉淀一条 `策略分析` 知识
+- Codex 文件协议已开始落地。
+  - 真实导出过 `wesly_local` 的 context JSON 与 prompt 文件
+  - 导出时现在还会自动生成 result template JSON
+  - worker 已支持 `apply-result` 校验结构化结果后回写数据库
+  - `apply-result` 现已补上用户归属校验和幂等短路
+  - 已用一份模拟 Codex 结果文件真实跑通 `apply-result`
+  - 对同一 task 再次 apply 时会稳定跳过，不会重复写快照
+- 已新增面向 Codex 的项目内执行手册。
+  - 新增 `docs/architecture/Codex分析执行手册.md`
+  - 现在项目内已经明确写清：
+    - 如何导出任务
+    - 哪些文件需要交给 Codex
+    - 如何回写结果
+    - 结果文件的命名和用途
+- Codex bundle 目录已经实测生成。
+  - `analysis-worker` 现在会为每个任务生成 `.runtime/analysis/bundles/<taskId>/`
+  - bundle 内含 `README.md / TASK_FOR_CODEX.md / context.json / prompt.md / result.template.json`
+  - `analysis:export` 已可对处于 `processing` 的任务重新导出 bundle
+- 已补充快捷命令。
+  - `analysis:claim`
+  - `analysis:dispatch`
+  - `analysis:export`
+  - `analysis:latest`
+  - `analysis:apply`
+- `analysis:apply` 现在支持默认 bundle 结果路径。
+  - 如果 Codex 把结果写到 `bundles/<taskId>/result.json`
+  - 回写时只传 `taskId` 即可
+- 最新导出任务现在有固定指针。
+  - `.runtime/analysis/latest-task-id.txt`
+  - `.runtime/analysis/latest-bundle.txt`
+  - `analysis:latest` 可直接打印“交给 Codex”和“回写结果”的标准动作
+- 第一条 bundle 驱动的 Codex 结果已真实回写。
+  - 任务 `8779247f-706d-462c-afa9-2125cf68cfc1` 已由 `bundles/<taskId>/result.json` 成功执行 `analysis:apply`
+  - `analysis_queue.status` 已变为 `done`
+  - 最新快照 `bd99930b-e859-4d8e-8602-ce683a1d6604` 已写入 `analysis_snapshots`
+  - 最新策略建议已写入 `system_insights`
+  - 最新知识条目 `轻启动日任务承接法` 已写入 `knowledge_entries`
+- Codex 运行拓扑已补齐到文档。
+  - 已明确“扫什么任务”始终由项目协议决定，而不是由 Codex Desktop / IDEA 插件 / Docker 自己记忆
+  - 已在架构文档中补充本机桌面、IDEA/插件、Docker 三种模式
+  - 已把统一入口固定为 `analysis:dispatch / analysis:latest / analysis:apply`
+- 自动巡航入口已落地并完成真实验证。
+  - 新增 `npm run analysis:autopilot`
+  - 该命令会顺序执行：补齐队列 -> apply 已准备好的 result.json -> 导出下一条 bundle
+  - 本地真实验证已导出新任务 `c61d7050-ee57-481b-9290-d4309d5a7f55`
+  - 对应 bundle 已生成到 `.runtime/analysis/bundles/c61d7050-ee57-481b-9290-d4309d5a7f55`
+- 单题错因诊断已正式接入 Codex bundle 协议。
+  - `analysis-worker` 已支持 `user_error_diagnosis`
+  - 支持 `--enqueue-user-error-id=<userErrorId>`
+  - apply 后会直接写回 `user_errors.aiRootReason / aiErrorReason / aiActionRule / aiThinking / aiReasonTag / customAiAnalysis`
+  - 已用真实错题 `cmmxfth01007dlgdpcis4azkc` 跑通：
+    - 队列任务 `10cf7b4b-f295-476d-a071-c85c96020d0f` 已 `done`
+    - 新增诊断知识 `政策作用对象判别法`
+- 图片题 OCR 路线已收口到文档和 worker。
+  - 项目原本已有截图 OCR 基础设施
+  - 本轮已在 `user_error_diagnosis` 导出时增加图片题 OCR 尝试
+  - 若题目有 `questionImage` 且配置 `MINIMAX_API_KEY`，会把 `imageOcr` 一并带入 bundle context
+- AI 进化路线已收成正式方案文档。
+  - 新增 `docs/architecture/AI进化路线图.md`
+  - 明确了单题诊断的 RAG 进化顺序：
+    - 先检索用户历史错因
+    - 再检索知识库
+    - 再引入规则效果评分
+    - 最后反哺策略层
+  - 也明确了 OCR 在图题里的位置：增强层，不是唯一真相来源
+- AI 进化路线第一阶段已开始真正落实现。
+  - `user_error_diagnosis` context 已新增：
+    - `historicalPatterns`
+    - `ruleEffectiveness`
+    - `userProfileSignals`
+    - `latestStrategySnapshot`
+  - `user_strategy_refresh` context 已新增：
+    - `diagnosisFeedbackSummary`
+    - `recentRulePerformance`
+  - `user_error_diagnosis` result template / contract 已新增：
+    - `usedEvidence`
+    - `diagnosisDecision`
+    - `strategyImpact`
+  - `retrievedKnowledge` 已补：
+    - `effectScore`
+    - `lastUsedAt`
+    - `matchReason`
+- 已新增 AI 进化测试数据脚本。
+  - `npm run analysis:seed:testdata -- --userId=wesly_local --count=24`
+  - 本轮真实生成：
+    - `24` 条 `user_errors`
+    - `47` 条 `review_records`
+    - `24` 条 `practice_records`
+  - `wesly_local` 当前错题总数已到 `26`
+- 已导出一条增强后的单题诊断 bundle 用于验收。
+  - task: `7e495884-4459-4870-85c8-88c832fdeaea`
+  - context 中已可见历史错因、规则效果、用户信号、最近策略和知识命中
+- 根项目已补运行入口。
+  - 新增 `npm run analysis:worker`
+  - 已验证 `--help` 与脚本入口可正常运行
+
+- 继续做了一轮“从人使用角度出发”的全局体验优化。
+  - `AI 深度诊断` 不再走旧的单点 Minimax 直连逻辑
+  - 现已统一走 `src/lib/ai/provider.ts`
+  - 外部 AI 不可用时会返回本地降级诊断，不再直接 500
+  - 练习页会明确提示“AI 服务暂时不可用，已为你生成本地诊断建议”
+- 普通练习（非套卷）不再是一根线走到底。
+  - 深度 / 快速练习都新增了轻量题卡
+  - 支持上一题、先跳过、下一道未做、回看已做题
+  - 普通练习终于和套卷一样具备基本跳题能力
+- `笔记` 已正式提升为主入口。
+  - 底部导航新增 `笔记`
+  - 不再只能从设置页进入
+- 首页增加了 AI 状态说明卡。
+  - 用户现在能直接看到 AI 是否启用
+  - 以及当前 AI 在这个系统里的真实职责：错因诊断、行动规则、套卷复盘沉淀
+- 自动化登录辅助收紧了一轮。
+  - E2E 登录统一走 `data-testid`
+  - 提交前会等待用户名和密码真的填进输入框
+  - 套卷测试已改为复用公共登录 helper
+
+- `master` 主线已核验可继续作为唯一开发主线。
+  - 当前本地 `master` 与 `origin/master` 一致
+  - `npm run build` 通过
+  - `npx tsc --noEmit` 已恢复通过
+  - 根因确认：`master` 上残留了 `tsconfig.json -> include: .next/types/**/*.ts`
+  - 处理方式：移除这条对 Next 生成类型产物的硬依赖，避免 `tsc` 被临时构建产物绑死
+- 工程产物污染再收口一层。
+  - `.gitignore` 已补 `*.tsbuildinfo`
+  - 避免 `tsc` 生成的增量文件继续污染工作区
+- `typecheck` 已改为独立稳定口径。
+  - `next build` 会自动把 `.next/types/**/*.ts` 写回 `tsconfig.json`
+  - 因此项目新增 `tsconfig.typecheck.json` 与 `npm run typecheck`
+  - 后续类型校验以 `npm run typecheck` 为准，不再直接依赖会被 Next 改写的根 `tsconfig`
 
 - 文件导入的“带图题入库”链路补通了一轮，且已用真实题源直接验库。
   - `src/lib/parsers/excel-parser.ts` 不再只读单元格文本，改为同时读取 `xlsx` drawing/media
@@ -294,6 +546,14 @@ Updated: 2026-03-19 20:05 CST
 - AI 还没达到“提分策略引擎”级别。
   - `SystemInsight` 已开始反向接入训练引擎，但还只是最小闭环
   - 仍缺跨题归纳、周策略、预测分变化解释、用户可感知的持续策略反馈
+- Codex 高频分析链路还只完成了第一段。
+  - 现在已有计划文档且 `user_strategy_refresh` 已真实跑通
+  - 现在已完成“模拟 Codex 输出 JSON -> apply-result”的验证
+  - bundle 和模板已备好，下一步就是让真正的 Codex 产出 `result.json`
+  - `paper_review_summary / user_error_diagnosis` 仍未入队
+- 向量知识库已预埋入口，但还没完成“分析前先检索相似策略知识”的反向接入。
+  - 现在已支持写入 embedding
+  - 但 worker 还没有在跑分析前先用向量检索历史知识
 - 配置完成态已经统一并补齐历史账号，但还需要继续检查其他流程是否仍反复暴露配置。
 - 系统级自动回归还不够深。
   - 当前已有 smoke + import tests
@@ -316,6 +576,10 @@ Updated: 2026-03-19 20:05 CST
 - Playwright 目前仍依赖本地账号和数据库状态。
   - 这轮已经通过“重置 admin onboarding 状态 + 容忍套卷空态”降低脆弱性
   - 后续继续补 E2E 时，仍建议把测试数据准备再工程化一层
+- 当前阻塞已从“本地 DB 是否启动”转为“Prisma 在该环境里无法稳定直连本地 Postgres”。
+  - `psql` 已验证可成功连 `error_manage_dev`
+  - `analysis-worker` 已切换到 `pg + SQL` 规避该问题
+  - 主项目 Prisma 侧是否继续深挖，可后续单独处理
 
 ## Core Metrics
 
@@ -346,7 +610,77 @@ Updated: 2026-03-19 20:05 CST
 - Dashboard strategy visibility: `enabled`
 - AI closed-loop into training engine: `in progress`
 
+## Latest Update
+
+- Current Goal:
+  - 把 `DOCX` 导入从“纯文本兜底”升级成真正可用的图文解析链路
+- What Changed:
+  - 重写 [src/lib/parsers/docx-parser.ts](/Users/10030299/Documents/Playground/error_manage/src/lib/parsers/docx-parser.ts)
+  - 改为基于 `mammoth.convertToHtml`
+  - 保留题干内联图、材料图、图形题选项图，并统一归一图片选项占位
+  - 资料分析新增“新材料重置旧材料”规则，避免后一组题继承前一组图
+  - 新增 [src/lib/import/docx-parser.test.mjs](/Users/10030299/Documents/Playground/error_manage/src/lib/import/docx-parser.test.mjs)
+- What Is Done:
+  - 真实样本 `2022年国家公务员录用考试《行测》题（地市级网友回忆版）.docx` 解析结果：
+    - `total = 130`
+    - `byType = 20 / 40 / 10 / 40 / 20`
+    - `withImage = 32`
+  - 关键样本已核对：
+    - `61`：题干内联公式恢复成 `2/3`
+    - `67`：图片选项归一成 `A.见图`
+    - `71-77`：`A.A / B.B` 归一成 `A.见图 / B.见图`
+    - `126`：文字材料正确覆盖，且不再继承上一组资料图
+    - `129`：图片选项保留并归一成 `见图`
+- What Is Still Open:
+  - `DOCX` 当前带图题数量是 `32`，仍低于当前 Excel 链路的 `35`
+  - 后续还要继续做 DOCX 与 Excel 的逐题差异对账，决定最终是否做“双源择优合并”
+- Core Metrics:
+  - `npm run test:import` 通过（13/13）
+  - `npx tsc --noEmit` 通过
+  - 真实 DOCX 样本解析：`warnings = []`
+- Next 3 Actions:
+  1. 继续对比 DOCX 与 Excel 的逐题差异，找出 `32 -> 35` 的缺口题号
+  2. 视差异结果决定是否做 “Excel 主导入 + DOCX 校对覆盖” 的双源合并
+  3. 把 DOCX 导入再接一轮页面端实测，确认预览/确认/入库链路一致
+
+## Latest Update
+
+- Current Goal:
+  - 收缩导入口子到 `DOCX only`，并把导入主链路做一轮实际验证
+- What Changed:
+  - [src/app/api/import/upload/route.ts](/Users/10030299/Documents/Playground/error_manage/src/app/api/import/upload/route.ts) 现在只接受 `.docx`
+  - [src/app/(app)/import/page.tsx](/Users/10030299/Documents/Playground/error_manage/src/app/(app)/import/page.tsx) 的 `accept`、提示文案和错误提示都已收缩到 `DOCX`
+  - 新增 [tests/e2e/import-docx-flow.spec.ts](/Users/10030299/Documents/Playground/error_manage/tests/e2e/import-docx-flow.spec.ts)
+  - 扩展 [tests/e2e/import-confirm.spec.ts](/Users/10030299/Documents/Playground/error_manage/tests/e2e/import-confirm.spec.ts) 覆盖 `replace_low_quality -> overwritten`
+  - 加强 [tests/e2e/helpers.ts](/Users/10030299/Documents/Playground/error_manage/tests/e2e/helpers.ts) 的冷启动登录重试
+- What Is Done:
+  - `DOCX` 导入入口已收缩完成
+  - 实测通过：
+    - `npx tsc --noEmit`
+    - `tests/e2e/import-confirm.spec.ts` 单独跑通
+    - `tests/e2e/papers-practice.spec.ts` 单独跑通
+    - `tests/e2e/import-docx-flow.spec.ts` 单独跑通
+  - `import-docx-flow` 覆盖了：
+    - 导入预览
+    - 确认入库
+    - 套卷生成
+    - 套卷内图片题展示
+- What Is Still Open:
+  - 三组 E2E 合并串跑仍有冷启动抖动
+  - 主要表现为首个测试命中登录页编译/认证时序，属于测试基建稳定性问题，不是这轮 DOCX 导入链路本身回退
+- Core Metrics:
+  - 单测/类型检查：通过
+  - `import-confirm`：4 条通过
+  - `papers-practice`：2 条通过
+  - `import-docx-flow`：1 条通过
+
 ## Environment Notes
+
+- Docker dev stack:
+  - Start: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`
+  - Tunnel URL file: `.runtime/tunnel-url.txt`
+  - Tunnel logs: `docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f tunnel`
+  - Login page now shows the current Quick Tunnel URL automatically
 
 - Project path: `/Users/10030299/Documents/Playground/error_manage`
 - Tunnel runtime cache:

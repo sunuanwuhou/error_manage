@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { upsertKnowledgeNoteFromInsight } from '@/lib/knowledge-notes'
 import { z } from 'zod'
 
 const schema = z.object({
@@ -111,8 +112,18 @@ export async function POST(req: NextRequest) {
     return sameSkillTag && (sameFinalContent || (sameSourceErrorIds && sameDomainExamples))
   })
 
+  const knowledgeNote = await upsertKnowledgeNoteFromInsight({
+    userId,
+    skillTag: normalizedSkillTag || duplicate?.skillTag || normalizedSkillTag,
+    insightType: parsed.data.insightType,
+    finalContent: normalizedFinalContent,
+    aiDraft: normalizeComparableText(parsed.data.aiDraft),
+    sourceErrorIds: normalizedSourceErrorIds,
+    domainExamples: normalizedDomainExamples,
+  })
+
   if (duplicate) {
-    return NextResponse.json({ ...duplicate, deduped: true })
+    return NextResponse.json({ ...duplicate, deduped: true, knowledgeNoteId: knowledgeNote.id })
   }
 
   const insight = await prisma.userInsight.create({
@@ -125,7 +136,8 @@ export async function POST(req: NextRequest) {
       domainExamples: normalizedDomainExamples,
     },
   })
-  return NextResponse.json(insight, { status: 201 })
+
+  return NextResponse.json({ ...insight, knowledgeNoteId: knowledgeNote.id }, { status: 201 })
 }
 
 export async function PUT(req: NextRequest) {

@@ -34,7 +34,7 @@ export default async function PapersPage({
 
   return (
     <div data-testid="papers-page" className="max-w-lg mx-auto px-4 pt-4 pb-8">
-      <div className="mb-6">
+      <div className="mb-6 lg:flex lg:items-end lg:justify-between">
         <h1 className="text-xl font-bold text-gray-900">套卷练习</h1>
         <p className="text-xs text-gray-400 mt-0.5">按来源、年份、省份聚合，整套开始练</p>
       </div>
@@ -123,7 +123,7 @@ export default async function PapersPage({
           </div>
         </div>
       ) : (
-        <div data-testid="papers-list" className="space-y-3">
+        <div data-testid="papers-list" className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
           {papers.map(paper => (
             <div key={paper.key} data-testid="paper-card" className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
               <div className="flex items-start justify-between gap-3">

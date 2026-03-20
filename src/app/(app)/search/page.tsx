@@ -5,8 +5,19 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 
 interface SearchResult {
-  id: string; content: string; type: string; subtype?: string
-  answer: string; examType: string; srcYear?: string
+  id: string
+  content: string
+  type: string
+  subtype?: string
+  sub2?: string
+  skillTags?: string
+  answer: string
+  examType: string
+  srcYear?: string
+  srcProvince?: string
+  srcExamSession?: string
+  srcOrigin?: string
+  srcQuestionNo?: string
 }
 
 export default function SearchPage() {
@@ -15,6 +26,13 @@ export default function SearchPage() {
   const inputRef  = useRef<HTMLInputElement>(null)
   const [q, setQ]             = useState(searchParams.get('q') ?? '')
   const [type, setType]       = useState(searchParams.get('type') ?? '')
+  const [module2, setModule2] = useState(searchParams.get('module2') ?? '')
+  const [module3, setModule3] = useState(searchParams.get('module3') ?? '')
+  const [skillTag, setSkillTag] = useState(searchParams.get('skillTag') ?? '')
+  const [srcExamSession, setSrcExamSession] = useState(searchParams.get('srcExamSession') ?? '')
+  const [srcProvince, setSrcProvince] = useState(searchParams.get('srcProvince') ?? '')
+  const [srcYear, setSrcYear] = useState(searchParams.get('srcYear') ?? '')
+  const [examType, setExamType] = useState(searchParams.get('examType') ?? '')
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
@@ -25,17 +43,35 @@ export default function SearchPage() {
   useEffect(() => {
     setQ(searchParams.get('q') ?? '')
     setType(searchParams.get('type') ?? '')
+    setModule2(searchParams.get('module2') ?? '')
+    setModule3(searchParams.get('module3') ?? '')
+    setSkillTag(searchParams.get('skillTag') ?? '')
+    setSrcExamSession(searchParams.get('srcExamSession') ?? '')
+    setSrcProvince(searchParams.get('srcProvince') ?? '')
+    setSrcYear(searchParams.get('srcYear') ?? '')
+    setExamType(searchParams.get('examType') ?? '')
   }, [searchParams])
 
   useEffect(() => {
     clearTimeout(timerRef.current)
-    if (!q.trim() && !type) { setResults([]); setError(''); return }
+    if (!q.trim() && !type && !module2 && !module3 && !skillTag && !srcExamSession && !srcProvince && !srcYear && !examType) {
+      setResults([])
+      setError('')
+      return
+    }
     timerRef.current = setTimeout(async () => {
       setLoading(true)
       setError('')
       const params = new URLSearchParams()
       if (q.trim()) params.set('q', q.trim())
       if (type)     params.set('type', type)
+      if (module2) params.set('module2', module2)
+      if (module3) params.set('module3', module3)
+      if (skillTag) params.set('skillTag', skillTag)
+      if (srcExamSession) params.set('srcExamSession', srcExamSession)
+      if (srcProvince) params.set('srcProvince', srcProvince)
+      if (srcYear) params.set('srcYear', srcYear)
+      if (examType) params.set('examType', examType)
       params.set('limit', '30')
       try {
         const res  = await fetch(`/api/questions?${params}`)
@@ -49,7 +85,7 @@ export default function SearchPage() {
         setLoading(false)
       }
     }, 300)
-  }, [q, type])
+  }, [q, type, module2, module3, skillTag, srcExamSession, srcProvince, srcYear, examType])
 
   async function addToErrors(questionId: string) {
     const res = await fetch('/api/errors', {
@@ -64,18 +100,28 @@ export default function SearchPage() {
     setError(data.error ?? '加入错题本失败')
   }
 
+  const hasKnowledgeContext = Boolean(module2 || module3 || skillTag || srcExamSession || srcProvince || srcYear || examType)
+
   return (
     <div className="max-w-lg mx-auto px-4 pt-4 pb-8">
       <div className="flex items-center gap-3 mb-4">
         <button onClick={() => router.back()} className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center">←</button>
-        <h1 className="text-xl font-bold text-gray-900">搜索题目</h1>
+        <h1 className="text-xl font-bold text-gray-900 lg:text-2xl">搜索题目</h1>
       </div>
 
       <div className="sticky top-0 bg-gray-50 pb-3 space-y-2 z-10">
+        {hasKnowledgeContext && (
+          <div className="rounded-2xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+            <p className="font-medium">知识点训练模式</p>
+            <p className="mt-1">
+              当前会优先匹配题型、二级模块、三级模块、考点和题源。
+            </p>
+          </div>
+        )}
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">🔍</span>
           <input ref={inputRef} value={q} onChange={e => setQ(e.target.value)}
-            placeholder="搜索题目内容关键词..."
+            placeholder={hasKnowledgeContext ? '在当前知识点下继续筛题...' : '搜索题目内容关键词...'}
             className="w-full pl-9 pr-4 py-3 border border-gray-200 bg-white rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
           {q && <button onClick={() => setQ('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 text-lg">×</button>}
         </div>
@@ -88,6 +134,17 @@ export default function SearchPage() {
             </button>
           ))}
         </div>
+        {hasKnowledgeContext && (
+          <div className="flex flex-wrap gap-2">
+            {module2 && <span className="rounded-full bg-white px-3 py-1 text-xs text-blue-600 border border-blue-200">二级：{module2}</span>}
+            {module3 && <span className="rounded-full bg-white px-3 py-1 text-xs text-blue-600 border border-blue-200">三级：{module3}</span>}
+            {skillTag && <span className="rounded-full bg-white px-3 py-1 text-xs text-blue-600 border border-blue-200">考点：{skillTag}</span>}
+            {srcExamSession && <span className="rounded-full bg-white px-3 py-1 text-xs text-blue-600 border border-blue-200">来源：{srcExamSession}</span>}
+            {srcProvince && <span className="rounded-full bg-white px-3 py-1 text-xs text-blue-600 border border-blue-200">省份：{srcProvince}</span>}
+            {srcYear && <span className="rounded-full bg-white px-3 py-1 text-xs text-blue-600 border border-blue-200">年份：{srcYear}</span>}
+            {examType && <span className="rounded-full bg-white px-3 py-1 text-xs text-blue-600 border border-blue-200">考试类型：{examType}</span>}
+          </div>
+        )}
       </div>
 
       {loading && <div className="text-center py-8 text-gray-400 text-sm">搜索中...</div>}
@@ -113,15 +170,17 @@ export default function SearchPage() {
         </div>
       )}
 
-      <div className="space-y-3 mt-2">
+      <div className="grid gap-3 mt-2 lg:grid-cols-2 xl:grid-cols-3">
         {results.map(r => (
-          <div key={r.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+          <div key={r.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 lg:p-5">
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-lg">{r.type}{r.subtype ? ` · ${r.subtype}` : ''}</span>
               {r.srcYear && <span className="text-xs text-gray-400">{r.srcYear}</span>}
+              {r.srcProvince && <span className="text-xs text-gray-400">{r.srcProvince}</span>}
+              {r.srcExamSession && <span className="text-xs text-gray-400 line-clamp-1">{r.srcExamSession}</span>}
               <span className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded">答：{r.answer}</span>
             </div>
-            <p className="text-sm text-gray-700 line-clamp-3 mb-3">{r.content}</p>
+            <p className="text-sm text-gray-700 line-clamp-4 mb-3">{r.content}</p>
             <button onClick={() => addToErrors(r.id)}
               className="w-full py-2 border border-blue-200 text-blue-600 text-sm rounded-xl hover:bg-blue-50 transition-colors">
               加入错题本

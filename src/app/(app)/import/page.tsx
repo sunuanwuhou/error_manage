@@ -1,6 +1,6 @@
 'use client'
 // src/app/(app)/import/page.tsx
-// 真题导入：PDF / Excel / CSV
+// 真题导入：DOCX
 // 流程：上传 → 解析预览 → 勾选题目 → 确认入库
 
 import { useState, useRef, useEffect } from 'react'
@@ -174,6 +174,13 @@ export default function ImportPage() {
     setUploadError('')
     setUploading(true)
     setUploadError('')
+
+    const lowerName = file.name.toLowerCase()
+    if (!lowerName.endsWith('.docx')) {
+      setUploading(false)
+      setUploadError(lowerName.endsWith('.doc') ? '暂不直接支持 .doc，请先另存为 .docx 后再导入' : '当前只支持 DOCX 导入，请上传 .docx 文件')
+      return
+    }
 
     const inferred = inferImportMeta(file.name)
     const effectiveExamType = examType || inferred.examType || 'guo_kao'
@@ -351,7 +358,7 @@ export default function ImportPage() {
       })
     }
     return (
-      <div className="max-w-2xl mx-auto px-4 pt-4 pb-32">
+      <div className="max-w-2xl mx-auto px-4 pt-4 pb-32 lg:pb-8">
         <div className="flex items-center gap-3 mb-4">
           <button onClick={() => setStep('upload')} className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center">←</button>
           <div>
@@ -370,7 +377,7 @@ export default function ImportPage() {
         )}
 
         {/* 来源补充 */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4 lg:p-5">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-xs font-medium text-gray-500 mb-1">识别有误时修改</p>
@@ -390,7 +397,7 @@ export default function ImportPage() {
             </button>
           </div>
           {showPreviewMeta && (
-            <div className="grid grid-cols-2 gap-2 mt-4">
+            <div className="grid grid-cols-2 gap-2 mt-4 lg:grid-cols-4">
               <input value={srcYear} onChange={e => setSrcYear(e.target.value)}
                 placeholder="年份，如 2024"
                 className="px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
@@ -401,9 +408,9 @@ export default function ImportPage() {
           )}
         </div>
 
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4 lg:p-5">
           <p className="text-xs font-medium text-gray-500 mb-2">发现重复时</p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
             {[
               { value: 'skip', label: '跳过', desc: '保留旧题，重复题不动。' },
               { value: 'replace_low_quality', label: '覆盖低质量旧题', desc: '只在新结果明显更完整时更新。' },
@@ -452,9 +459,9 @@ export default function ImportPage() {
             const isErr = addErrors.has(item.index)
             return (
               <div key={item.index}
-                className={`bg-white rounded-2xl border shadow-sm p-3 transition-colors
+                className={`bg-white rounded-2xl border shadow-sm p-3 transition-colors lg:p-4
                   ${isSel ? 'border-blue-200' : 'border-gray-100 opacity-50'}`}>
-                <div className="flex items-start gap-2">
+                <div className="flex items-start gap-2 lg:gap-3">
                   {/* 入库勾选 */}
                   <button onClick={() => {
                     setSelected(s => { const n = new Set(s); isSel ? n.delete(item.index) : n.add(item.index); return n })
@@ -481,11 +488,11 @@ export default function ImportPage() {
                       <textarea value={item.content}
                         onChange={e => handleEditItem(item.index, 'content', e.target.value)}
                         onBlur={() => setEditingIdx(null)}
-                        autoFocus rows={3}
+                        autoFocus rows={4}
                         className="w-full text-sm text-gray-700 border border-blue-300 rounded-lg p-1.5 resize-none focus:outline-none"
                       />
                     ) : (
-                      <p className="text-sm text-gray-700 line-clamp-2 cursor-pointer hover:text-blue-600"
+                      <p className="text-sm text-gray-700 line-clamp-3 cursor-pointer hover:text-blue-600"
                         onClick={() => setEditingIdx(item.index)}
                         title="点击编辑">
                         {item.content} <span className="text-xs text-gray-300">✏️</span>
@@ -520,7 +527,7 @@ export default function ImportPage() {
         )}
 
         {/* 底部确认 */}
-        <div className="fixed bottom-20 left-4 right-4 max-w-2xl mx-auto">
+        <div className="fixed bottom-20 left-4 right-4 max-w-2xl mx-auto lg:static lg:mt-6 lg:max-w-none">
           <button onClick={handleConfirm} disabled={confirming || selected.size === 0}
             className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl text-base hover:bg-blue-700 disabled:opacity-40 shadow-lg transition-colors">
             {confirming
@@ -538,12 +545,12 @@ export default function ImportPage() {
       <div className="flex items-center gap-3 mb-6">
         <button onClick={() => router.back()} className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center">←</button>
         <div>
-          <h1 className="text-xl font-bold text-gray-900">导入真题</h1>
-          <p className="text-xs text-gray-400 mt-0.5">支持粉笔 / 华图 / 中公 PDF 及 Excel</p>
+          <h1 className="text-xl font-bold text-gray-900 lg:text-2xl">导入真题</h1>
+          <p className="text-xs text-gray-400 mt-0.5">当前主入口只支持 Word DOCX 导入</p>
         </div>
       </div>
 
-      <div className="bg-gray-50 rounded-2xl border border-gray-100 p-4 mb-4">
+      <div className="bg-gray-50 rounded-2xl border border-gray-100 p-4 mb-4 lg:p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium text-gray-500 mb-1">自动识别</p>
@@ -563,7 +570,7 @@ export default function ImportPage() {
 
         {showImportSettings && (
           <div className="mt-4 space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">考试类型</label>
                 <select value={examType} onChange={e => setExamType(e.target.value)}
@@ -578,7 +585,7 @@ export default function ImportPage() {
                   className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">年份</label>
                 <input value={srcYear} onChange={e => setSrcYear(e.target.value)}
@@ -605,14 +612,14 @@ export default function ImportPage() {
         className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-colors
           ${dragging ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'}`}
       >
-        <input ref={fileRef} type="file" accept=".pdf,.docx,.xlsx,.xls,.csv" className="hidden"
+        <input ref={fileRef} type="file" accept=".docx" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
         <div className="text-4xl mb-3">{uploading ? '⏳' : '📂'}</div>
         {uploading ? (
           <div className="space-y-2">
             <div className="animate-spin text-3xl">⏳</div>
             <p className="font-semibold text-gray-700">解析中，请稍候...</p>
-            <p className="text-xs text-gray-400">PDF 通常需要 15-30 秒</p>
+            <p className="text-xs text-gray-400">DOCX 正在提取题干、材料图和图片选项</p>
             <div className="w-32 h-1 bg-gray-200 rounded-full overflow-hidden mx-auto">
               <div className="h-full bg-blue-500 rounded-full animate-pulse" style={{width:'60%'}} />
             </div>
@@ -620,7 +627,7 @@ export default function ImportPage() {
         ) : (
           <>
             <p className="font-semibold text-gray-700">点击或拖拽文件到这里</p>
-            <p className="text-sm text-gray-400 mt-1">PDF · DOCX · Excel(.xlsx/.xls) · CSV · 最大 20MB</p>
+            <p className="text-sm text-gray-400 mt-1">仅支持 DOCX · 最大 20MB</p>
           </>
         )}
       </div>
@@ -633,14 +640,12 @@ export default function ImportPage() {
 
       {/* 格式说明 */}
       <div className="mt-6 space-y-3">
-        <p className="text-xs font-medium text-gray-500">支持的文件格式</p>
+        <p className="text-xs font-medium text-gray-500">推荐导入格式</p>
         {[
-          { icon: '📄', name: 'PDF（粉笔/华图/中公）',
-            desc: '自动提取题目+选项，末尾答案表自动对应。扫描版不支持（图片PDF）。' },
-          { icon: '📝', name: 'DOCX（题目文档）',
-            desc: '支持 Word 版题库文档，自动提取题目、选项和“正确答案”行。' },
-          { icon: '📊', name: 'Excel / CSV',
-            desc: '列名含"题目/答案/A/B/C/D"即可识别，也支持粉笔导出格式。' },
+          { icon: '📝', name: 'DOCX（Word 题库文档）',
+            desc: '当前正式入口只支持 DOCX，会优先保留题干内联图、资料分析材料图和图片选项。' },
+          { icon: '⚠️', name: '.doc（旧版 Word）',
+            desc: '请先在 Word 里另存为 .docx，再导入系统。' },
         ].map(f => (
           <div key={f.name} className="flex gap-3 bg-gray-50 rounded-xl p-3">
             <span className="text-2xl flex-shrink-0">{f.icon}</span>
@@ -653,13 +658,8 @@ export default function ImportPage() {
 
         <div className="bg-amber-50 rounded-xl p-3">
           <p className="text-xs text-amber-700">
-            <span className="font-medium">Excel 模板格式：</span>
-            表头至少包含：<code className="bg-amber-100 px-1 rounded">题目</code>
-            <code className="bg-amber-100 px-1 rounded ml-1">A</code>
-            <code className="bg-amber-100 px-1 rounded ml-1">B</code>
-            <code className="bg-amber-100 px-1 rounded ml-1">C</code>
-            <code className="bg-amber-100 px-1 rounded ml-1">D</code>
-            <code className="bg-amber-100 px-1 rounded ml-1">答案</code>
+            <span className="font-medium">导入建议：</span>
+            图片题、资料分析、图形推理和题干内嵌小公式，优先使用 <code className="bg-amber-100 px-1 rounded">DOCX</code>。
           </p>
         </div>
       </div>

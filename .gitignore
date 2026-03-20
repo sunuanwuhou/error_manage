@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+.env.docker
 
 # deps
 node_modules/
@@ -20,6 +21,7 @@ Thumbs.db
 # logs
 *.log
 npm-debug.log*
+*.tsbuildinfo
 
 # Playwright
 playwright-report/

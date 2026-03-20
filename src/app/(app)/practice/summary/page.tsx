@@ -198,7 +198,7 @@ export default function SummaryPage() {
   return (
     <div className="max-w-lg mx-auto px-4 pt-8 pb-24">
       {/* 主标题 */}
-      <div className="text-center mb-8">
+      <div className="text-center mb-8 lg:mb-10">
         <div className="text-6xl mb-3">
           {summary.newStockified > 0 ? '🏆' : summary.accuracy >= 80 ? '🎉' : '💪'}
         </div>
@@ -209,7 +209,7 @@ export default function SummaryPage() {
       </div>
 
       {paper && paperStats && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 mb-4">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 mb-4 lg:p-6">
           <div className="flex items-start justify-between gap-3 mb-4">
             <div>
               <h3 className="text-sm font-semibold text-gray-700">整卷复盘</h3>
@@ -222,7 +222,7 @@ export default function SummaryPage() {
             </span>
           </div>
           <p className="text-sm text-gray-600 mb-4">{paperStats.statusDetail}</p>
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <div className="rounded-2xl bg-gray-50 p-3 text-center">
               <p className="text-lg font-bold text-blue-700">{paperStats.completionRate}%</p>
               <p className="text-xs text-gray-400 mt-1">完成率</p>
@@ -258,7 +258,7 @@ export default function SummaryPage() {
           {quickActions.length > 0 && (
             <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50 p-4">
               <p className="text-xs font-medium text-gray-500 mb-3">直接回跳</p>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 lg:grid-cols-3">
                 {quickActions.map(action => (
                   <Link
                     key={action.title}
@@ -290,7 +290,7 @@ export default function SummaryPage() {
           {focusModules.length > 0 && (
             <div className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
               <p className="text-xs font-medium text-indigo-500 mb-2">优先回看的模块</p>
-              <div className="space-y-2">
+              <div className="grid gap-2 lg:grid-cols-2">
                 {focusModules.map(item => (
                   <div key={item.module} className="flex items-center justify-between gap-3 rounded-xl bg-white/70 px-3 py-2">
                     <div className="min-w-0">

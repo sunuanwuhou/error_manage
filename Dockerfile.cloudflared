@@ -1,0 +1,18 @@
+FROM debian:bookworm-slim
+
+ARG CLOUDFLARED_VERSION=2026.3.0
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+  -o /usr/local/bin/cloudflared \
+  && chmod +x /usr/local/bin/cloudflared
+
+WORKDIR /work
+
+COPY docker/cloudflared-entrypoint.sh /usr/local/bin/cloudflared-entrypoint.sh
+RUN chmod +x /usr/local/bin/cloudflared-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/cloudflared-entrypoint.sh"]

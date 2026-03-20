@@ -1,0 +1,34 @@
+services:
+  app:
+    environment:
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+    volumes:
+      - .:/app
+      - app_node_modules:/app/node_modules
+      - app_next:/app/.next
+    command: >
+      sh -c "if [ ! -d node_modules/@prisma/client ]; then npm ci; fi &&
+      npm run db:push &&
+      npm run dev -- --hostname 0.0.0.0 -p 3000"
+
+  tunnel:
+    build:
+      context: .
+      dockerfile: Dockerfile.cloudflared
+    container_name: error-manage-tunnel
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    environment:
+      TUNNEL_TARGET_URL: http://app:3000
+      RUNTIME_DIR: /runtime
+    volumes:
+      - ./.runtime:/runtime
+
+volumes:
+  app_node_modules:
+  app_next:

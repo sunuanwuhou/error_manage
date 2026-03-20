@@ -183,7 +183,10 @@ export default function StatsPage() {
 
   return (
     <div className="max-w-lg mx-auto px-4 pt-4 pb-8">
-      <h1 className="text-xl font-bold text-gray-900 mb-5">备考进度</h1>
+      <div className="mb-5 lg:flex lg:items-end lg:justify-between">
+        <h1 className="text-xl font-bold text-gray-900">备考进度</h1>
+        <p className="mt-1 text-xs text-gray-400">大屏更适合看预测、差距和训练节奏。</p>
+      </div>
 
       {strategySummary && (
         <div className="bg-blue-50 border border-blue-100 rounded-2xl p-5 mb-4">

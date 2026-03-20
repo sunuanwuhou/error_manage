@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
 
   const errors = await prisma.userError.findMany({
     where,
-    include: { question: { select: { id: true, content: true, options: true, answer: true, type: true, subtype: true, sharedAiAnalysis: true } } },
+    include: { question: { select: { id: true, content: true, questionImage: true, options: true, answer: true, type: true, subtype: true, sharedAiAnalysis: true } } },
     orderBy: { masteryPercent: 'desc' },
     take: 8,
   })

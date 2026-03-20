@@ -47,12 +47,43 @@ export async function signInAndNormalize(page: Page) {
     ADMIN_CREDENTIALS,
     { username: 'wesly', password: '748663' },
   ]) {
-    await page.goto('/login')
-    const usernameInput = page.locator('input[type="text"]').first()
-    const passwordInput = page.locator('input[type="password"]').first()
+    const usernameInput = page.getByTestId('login-username')
+    const passwordInput = page.getByTestId('login-password')
+    const submitButton = page.getByTestId('login-submit')
+
+    let loginReady = false
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await page.goto('/login')
+      try {
+        await usernameInput.waitFor({ state: 'visible', timeout: 10_000 })
+        await passwordInput.waitFor({ state: 'visible', timeout: 10_000 })
+        loginReady = true
+        break
+      } catch {
+        if (attempt === 2) {
+          throw new Error('login page did not become ready in time')
+        }
+      }
+    }
+
+    if (!loginReady) {
+      continue
+    }
+
     await usernameInput.fill(credential.username)
     await passwordInput.fill(credential.password)
-    await page.getByRole('button', { name: '登录' }).click()
+
+    await page.waitForFunction(
+      ([u, p]) => {
+        const userEl = document.querySelector('[data-testid="login-username"]') as HTMLInputElement | null
+        const passEl = document.querySelector('[data-testid="login-password"]') as HTMLInputElement | null
+        return !!userEl && !!passEl && userEl.value === u && passEl.value === p
+      },
+      [credential.username, credential.password],
+      { timeout: 5_000 },
+    )
+
+    await submitButton.click()
 
     try {
       await page.waitForURL(/\/(dashboard|onboarding)(?:$|[?#])/, { timeout: 12_000 })
@@ -92,5 +123,25 @@ export async function cleanupImportedQuestions(
   await prisma.userError.deleteMany({ where: { questionId: { in: questionIds } } })
   await prisma.analysisQueue.deleteMany({ where: { targetId: uniqueType } })
   await prisma.examTopicStats.deleteMany({ where: { skillTag: uniqueType } })
+  await prisma.question.deleteMany({ where: { id: { in: questionIds } } })
+}
+
+export async function cleanupImportedSession(
+  prisma: PrismaClient,
+  sourceSession: string,
+) {
+  const questions = await prisma.question.findMany({
+    where: { srcExamSession: sourceSession },
+    select: { id: true, type: true },
+  })
+
+  if (questions.length === 0) return
+
+  const questionIds = questions.map(q => q.id)
+  const skillTags = Array.from(new Set(questions.map(q => q.type).filter(Boolean)))
+  await prisma.practiceRecord.deleteMany({ where: { questionId: { in: questionIds } } })
+  await prisma.userError.deleteMany({ where: { questionId: { in: questionIds } } })
+  await prisma.analysisQueue.deleteMany({ where: { targetId: { in: skillTags } } })
+  await prisma.examTopicStats.deleteMany({ where: { skillTag: { in: skillTags } } })
   await prisma.question.deleteMany({ where: { id: { in: questionIds } } })
 }

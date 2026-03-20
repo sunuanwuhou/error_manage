@@ -39,11 +39,16 @@ export function qualityCheck(q: ParsedQuestion): {
   const hasFullOptions = q.options.length >= 4
   const hasImage = Boolean(q.questionImage)
   const isMaterialDrivenType = q.type === '资料分析'
+  const isLikelyLegitimateShortStem = hasFullOptions && (
+    (q.type === '判断推理' && /[：:?？]/.test(q.content))
+    || (q.type === '判断推理' && /对于/.test(q.content))
+    || (q.type === '常识判断' && /^下列|^关于/.test(q.content))
+  )
 
-  if (normalizedContentLength < 8) {
+  if (normalizedContentLength < 8 && !isLikelyLegitimateShortStem) {
     issues.push('题目过短，可能截断')
     score -= 30
-  } else if (normalizedContentLength < 20 && !hasImage && !(isMaterialDrivenType && hasFullOptions)) {
+  } else if (normalizedContentLength < 20 && !hasImage && !(isMaterialDrivenType && hasFullOptions) && !isLikelyLegitimateShortStem) {
     issues.push('题目过短，可能截断')
     score -= 20
   }

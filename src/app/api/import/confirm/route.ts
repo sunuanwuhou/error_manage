@@ -7,6 +7,7 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { inferPaperQuestionOrder } from '@/lib/papers'
 import { buildFingerprint, normalizeText, qualityCheck, shouldReplaceExisting, type DuplicateMode } from '@/lib/import/duplicate-policy'
+import { attachErrorToKnowledgeNote } from '@/lib/knowledge-notes'
 import { z } from 'zod'
 import type { ParsedQuestion } from '@/lib/parsers/pdf-parser'
 
@@ -204,7 +205,7 @@ export async function POST(req: NextRequest) {
           where: { userId_questionId: { userId, questionId } },
         })
         if (!alreadyIn) {
-          await prisma.userError.create({
+          const createdUserError = await prisma.userError.create({
             data: {
               userId, questionId,
               myAnswer: '', errorReason: '批量导入',
@@ -212,6 +213,16 @@ export async function POST(req: NextRequest) {
               nextReviewAt: new Date(),
             },
           })
+          attachErrorToKnowledgeNote({
+            userId,
+            userErrorId: createdUserError.id,
+            question: {
+              type: q.type,
+              content: q.content,
+            },
+            knowledgeTitle: q.type,
+            summary: q.analysis || '批量导入后自动沉淀的知识点草稿',
+          }).catch(() => {})
           addedToErrors++
         }
       }

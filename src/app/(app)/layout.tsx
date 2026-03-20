@@ -53,9 +53,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (isOnboarding) redirect('/onboarding')
 
   return (
-    <div className="min-h-screen pb-20">
-      {children}
+    <div className="app-shell min-h-screen bg-slate-50 lg:flex">
       <Navbar />
+      <main className="app-content min-w-0 flex-1 pb-20 lg:pb-0">
+        {children}
+      </main>
     </div>
   )
 }

@@ -6,6 +6,7 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { computePostAnswerUpdates, checkIsHot } from '@/lib/mastery-engine'
 import { logPracticeAnswer, logErrorStockified } from '@/lib/activity/logger'
+import { attachErrorToKnowledgeNote } from '@/lib/knowledge-notes'
 import { z } from 'zod'
 
 const submitSchema = z.object({
@@ -17,6 +18,7 @@ const submitSchema = z.object({
   thinkingVerdict:   z.enum(['correct', 'partial', 'wrong']).nullable().optional(),
   thinkingFeedback:  z.string().optional(),
   userThinkingText:  z.string().optional(),
+  userThinkingImage: z.string().optional(),
   isSlowCorrect:     z.boolean().default(false),
   thinkingInputType: z.enum(['text', 'sketch']).nullable().optional(),
   practiceMode:      z.enum(['quick', 'deep', 'focused', 'timed']).default('quick'),
@@ -41,7 +43,7 @@ export async function POST(req: NextRequest) {
 
   const userError = await prisma.userError.findFirst({
     where: { id: data.userErrorId, userId },
-    include: { question: { select: { id: true, type: true, subtype: true } } },
+    include: { question: { select: { id: true, type: true, subtype: true, sub2: true, skillTags: true, content: true } } },
   })
   if (!userError) return NextResponse.json({ error: '题目不存在' }, { status: 404 })
 
@@ -114,6 +116,7 @@ export async function POST(req: NextRequest) {
         isSlowCorrect:     data.isSlowCorrect,
         thinkingInputType: data.thinkingInputType ?? null,
         userThinkingText:  data.userThinkingText,
+        userThinkingImage: data.userThinkingImage,
         thinkingVerdict:   data.thinkingVerdict ?? null,
         thinkingFeedback:  data.thinkingFeedback,
         resultMatrix:      updates.resultMatrix,
@@ -158,6 +161,22 @@ export async function POST(req: NextRequest) {
   asyncTasks.push(updateSectionStats(userId))
 
   Promise.allSettled(asyncTasks).catch(() => {})
+
+  if (!data.isCorrect) {
+    attachErrorToKnowledgeNote({
+      userId,
+      userErrorId: data.userErrorId!,
+      question: {
+        type: userError.question.type,
+        subtype: userError.question.subtype,
+        sub2: userError.question.sub2,
+        skillTags: userError.question.skillTags,
+        content: userError.question.content,
+      },
+      knowledgeTitle: userError.aiReasonTag || userError.reasonTag || userError.aiRootReason || userError.errorReason || null,
+      summary: userError.aiActionRule || userError.aiThinking || userError.errorReason || null,
+    }).catch(() => {})
+  }
 
   logPracticeAnswer(userId, {
     questionId:      userError.questionId,
@@ -282,7 +301,7 @@ async function handlePracticeSubmit(
   const { NextResponse } = await import('next/server')
   const question = await prisma.question.findUnique({
     where: { id: questionId },
-    select: { id: true, type: true, subtype: true },
+    select: { id: true, type: true, subtype: true, sub2: true, skillTags: true, content: true },
   })
 
   if (!question) {
@@ -332,6 +351,27 @@ async function handlePracticeSubmit(
           reboundAlert:   false,
         },
       })
+
+      const created = await prisma.userError.findUnique({
+        where: { userId_questionId: { userId, questionId } },
+        select: { id: true },
+      })
+
+      if (created) {
+        attachErrorToKnowledgeNote({
+          userId,
+          userErrorId: created.id,
+          question: {
+            type: question.type,
+            subtype: question.subtype,
+            sub2: question.sub2,
+            skillTags: question.skillTags,
+            content: question.content,
+          },
+          knowledgeTitle: question.sub2 || question.subtype || question.type,
+          summary: '真题练习答错后自动沉淀的知识点草稿',
+        }).catch(() => {})
+      }
 
       // 异步触发 AI 诊断
       const { triggerPostRecordDiagnosis } = await import('@/lib/ai-diagnosis')

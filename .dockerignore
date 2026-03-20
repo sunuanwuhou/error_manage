@@ -1,0 +1,13 @@
+.git
+.gitignore
+.next
+node_modules
+.idea
+.codex-backup
+.runtime
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+coverage
+playwright-report
+test-results

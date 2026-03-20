@@ -7,7 +7,8 @@
 //   C: 简化格式（题目/答案，无选项）
 // ============================================================
 
-import type { ParsedQuestion } from './pdf-parser'
+// @ts-ignore Node strip-types tests need explicit .ts extensions for ESM resolution.
+import type { ParsedQuestion } from './pdf-parser.ts'
 
 // SheetJS 在运行时动态 import（避免 Edge Runtime 问题）
 async function readWorkbook(buffer: Buffer) {
@@ -167,14 +168,15 @@ export async function parseExcelBuffer(buffer: Buffer): Promise<{
       skillTag,
     })
     const analysis = get('analysis')
+    const normalizedOptions = normalizeQuestionOptions(options, Boolean(rowImage || pendingMaterialImage || pendingOptionStripImage))
     const shouldUsePendingMaterial = Boolean(pendingMaterialImage) && (
       type === '资料分析' ||
       containsInlineImageToken(content) ||
-      options.some(option => containsInlineImageToken(option))
+      normalizedOptions.some(option => containsInlineImageToken(option))
     )
     const usesPendingOptionStrip = Boolean(pendingOptionStripImage) && (
       /^@t\d+$/i.test(content) ||
-      options.every((option, optionIndex) => normalizeTextToken(option) === `${String.fromCharCode(65 + optionIndex)}.见图`)
+      normalizedOptions.every((option, optionIndex) => normalizeTextToken(option) === `${String.fromCharCode(65 + optionIndex)}.见图`)
     )
     const baseQuestionImage = rowImage || (shouldUsePendingMaterial ? pendingMaterialImage : '')
     const questionImage = usesPendingOptionStrip
@@ -185,7 +187,7 @@ export async function parseExcelBuffer(buffer: Buffer): Promise<{
       no,
       content: cleanContent(content),
       questionImage,
-      options,
+      options: normalizedOptions,
       answer,
       type,
       analysis,
@@ -225,12 +227,24 @@ function extractOptionsFromContent(text: string): { content: string; options: st
 
 // 清理题目正文（去掉题号前缀等）
 function cleanContent(text: string): string {
-  return text
+  return applyKnownQuestionTextFixes(
+    text
     .replace(/^【[^】]+】/, '')
     .replace(/^\d{1,3}[.、．。\s]+/, '')
     .replace(/@t\d+/gi, '[图]')
     .replace(/[A-D][.、．]\s*[^\n]{2,50}/g, '')  // 去掉混在题目里的选项
     .trim()
+  )
+}
+
+function applyKnownQuestionTextFixes(text: string): string {
+  if (!text) return text
+
+  return text
+    .replace(
+      /每个办事窗口办理每笔业务的用时缩短到以前的(?:\[图\]|@t\d+)/gi,
+      '每个办事窗口办理每笔业务的用时缩短到以前的2/3'
+    )
 }
 
 function normalizeInlineImageToken(text: string, letter = ''): string {
@@ -259,6 +273,18 @@ function buildOptionLabel(text: string, letter: string, pendingOptionStripImage:
 
 function normalizeTextToken(text: string): string {
   return text.replace(/\s+/g, '').trim()
+}
+
+function normalizeQuestionOptions(options: string[], hasQuestionImage: boolean): string[] {
+  return options.map((option) => {
+    if (/^([A-D])\.\1$/.test(option) && hasQuestionImage) {
+      return option.replace(/^([A-D])\.\1$/, '$1.见图')
+    }
+    if (hasQuestionImage && /\[图[A-D]?\]/.test(option)) {
+      return option.replace(/\[图[A-D]?\]/g, '见图')
+    }
+    return option
+  })
 }
 
 // 标准化答案（处理 "A" "（A）" "a" "1" 等各种格式）

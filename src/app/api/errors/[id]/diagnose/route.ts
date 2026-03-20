@@ -5,6 +5,45 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { callAIJson } from '@/lib/ai/provider'
+
+function buildFallbackDiagnosis(userError: {
+  myAnswer: string
+  errorReason: string | null
+  aiRootReason: string | null
+  reviewCount: number
+  correctCount: number
+  masteryPercent: number
+  question: { answer: string; type: string; subtype: string | null }
+}) {
+  const missedDirection =
+    userError.myAnswer === userError.question.answer
+      ? '你这次答案是对的，但稳定性还不够。'
+      : '你这次答案没有对上，说明这类题的判断线索还没抓稳。'
+
+  const reviewSignal =
+    userError.reviewCount >= 3 && userError.correctCount === 0
+      ? '这不是偶发失误，而是重复性错误。'
+      : userError.reviewCount >= 3
+        ? '你已经反复见过这类题，下一步重点是提炼稳定规则。'
+        : '这类题还处在建立方法感的阶段。'
+
+  const weakness =
+    userError.masteryPercent <= 30
+      ? '先别追求做快，先把判断顺序固定下来。'
+      : userError.masteryPercent <= 60
+        ? '会做但不稳定，说明规则还没压缩成一句可执行的话。'
+        : '基础已有，重点是减少犹豫和重复犯错。'
+
+  const root = userError.errorReason || userError.aiRootReason || '未形成稳定的判断规则'
+  const actionRule = `看到${userError.question.type}${userError.question.subtype ? `的${userError.question.subtype}` : ''}，先写出判断依据再选项对比`
+
+  return {
+    deepAnalysis: `${missedDirection}${reviewSignal}${weakness} 当前最明显的问题是：${root}。`,
+    targetedTip: actionRule.slice(0, 50),
+    warningPattern: userError.reviewCount >= 3 ? '重复犯同类规则错误' : '凭感觉抢答',
+  }
+}
 
 export async function POST(
   req: NextRequest,
@@ -20,11 +59,7 @@ export async function POST(
   })
   if (!userError) return NextResponse.json({ error: '不存在' }, { status: 404 })
 
-  const apiKey = process.env.MINIMAX_API_KEY
-  if (!apiKey) return NextResponse.json({ error: 'AI 未配置' }, { status: 500 })
-
   const q = userError.question
-  // 个性化诊断考虑用户的具体错误历史
   const prompt = `
 你是公务员行测解题专家，请针对这位学生的具体情况做个性化深度诊断。
 
@@ -45,24 +80,15 @@ AI之前的诊断：${userError.aiRootReason ?? '无'}
 只返回JSON。`
 
   try {
-    const res  = await fetch('https://api.minimax.chat/v1/text/chatcompletion_v2', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'abab6.5s-chat',
-        messages: [
-          { role: 'system', content: '你是公务员考试专家，分析深入精准，结合学生具体情况输出个性化建议。' },
-          { role: 'user',   content: prompt },
-        ],
-        max_tokens: 500,
-      }),
-    })
-    const data  = await res.json()
-    const text  = data.choices?.[0]?.message?.content ?? ''
-    const clean = text.replace(/```json|```/g, '').trim()
-    const result = JSON.parse(clean)
+    const result = await callAIJson<{
+      deepAnalysis: string
+      targetedTip: string
+      warningPattern: string
+    }>(
+      prompt,
+      '你是公务员考试专家，分析深入精准，结合学生具体情况输出个性化建议。严格只输出 JSON。',
+    )
 
-    // 写回 customAiAnalysis
     const fullAnalysis = `【个性化深度诊断】\n${result.deepAnalysis}\n\n💡 针对你的建议：${result.targetedTip}\n\n⚠️ 警惕模式：${result.warningPattern}`
     await prisma.userError.update({
       where: { id: params.id },
@@ -71,6 +97,17 @@ AI之前的诊断：${userError.aiRootReason ?? '无'}
 
     return NextResponse.json({ analysis: fullAnalysis })
   } catch (err: any) {
-    return NextResponse.json({ error: `诊断失败：${err.message}` }, { status: 500 })
+    console.error('[custom-diagnose] fallback:', err?.message ?? err)
+    const fallback = buildFallbackDiagnosis(userError)
+    const fullAnalysis = `【个性化深度诊断】\n${fallback.deepAnalysis}\n\n💡 针对你的建议：${fallback.targetedTip}\n\n⚠️ 警惕模式：${fallback.warningPattern}`
+    await prisma.userError.update({
+      where: { id: params.id },
+      data:  { customAiAnalysis: fullAnalysis },
+    })
+    return NextResponse.json({
+      analysis: fullAnalysis,
+      degraded: true,
+      message: 'AI 服务暂时不可用，已为你生成本地诊断建议。',
+    })
   }
 }

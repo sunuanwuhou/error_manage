@@ -1,52 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
-
-const CREDENTIALS = [
-  {
-    username: process.env.E2E_USERNAME ?? 'admin',
-    password: process.env.E2E_PASSWORD ?? 'changeme123',
-  },
-  {
-    username: 'wesly',
-    password: '748663',
-  },
-]
-
-async function signInAndNormalize(page: Page) {
-  for (const credential of CREDENTIALS) {
-    await page.goto('/login')
-    const usernameInput = page.locator('input[type="text"]').first()
-    const passwordInput = page.locator('input[type="password"]').first()
-    await expect(usernameInput).toBeVisible()
-    await expect(passwordInput).toBeVisible()
-    await usernameInput.fill(credential.username)
-    await passwordInput.fill(credential.password)
-    await page.getByRole('button', { name: '登录' }).click()
-
-    try {
-      await page.waitForURL(/\/(dashboard|onboarding)(?:$|[?#])/, { timeout: 12_000 })
-    } catch {
-      continue
-    }
-
-    if (page.url().includes('/onboarding')) {
-      await page.getByTestId('onboarding-step-1-next').click()
-      await page.getByTestId('onboarding-step-2-next').click()
-      await page.getByTestId('onboarding-submit').click()
-      try {
-        await page.waitForURL(/\/dashboard(?:$|[?#])/, { timeout: 12_000 })
-      } catch {
-        const saveError = await page.locator('text=/保存失败|当前登录状态已过期|未登录/').textContent().catch(() => null)
-        throw new Error(saveError ? `Onboarding save failed: ${saveError}` : 'Onboarding did not reach dashboard')
-      }
-    }
-
-    if (page.url().includes('/dashboard')) {
-      return
-    }
-  }
-
-  throw new Error('Unable to sign in with the bundled smoke-test credentials')
-}
+import { expect, test } from '@playwright/test'
+import { signInAndNormalize } from './helpers'
 
 test.describe('paper practice smoke', () => {
   test('opens /papers and renders either paper cards or a clear empty state', async ({ page }) => {

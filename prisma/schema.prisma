@@ -153,6 +153,9 @@ model UserNote {
   userId    String
   type      String
   subtype   String?
+  module2   String?
+  module3   String?
+  sourceErrorIds String?
   title     String
   content   String
   isPrivate Boolean  @default(false)

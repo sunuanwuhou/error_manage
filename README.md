@@ -1,7 +1,25 @@
 # 错题管理系统
 
 > 公务员行测备考 · 存量化学习系统  
-> 技术方案详见 `docs/技术方案_v7.9.md`
+> 技术方案详见 `docs/spec/技术方案_v7.9.md`  
+> 文档导航与阅读顺序详见 `docs/README.md`
+
+## 文档入口
+
+如果你不是直接来跑代码，而是想先快速恢复项目上下文，建议按这个顺序阅读：
+
+1. `docs/README.md`
+2. `docs/项目总览与路线图.md`
+3. `docs/progress/current_snapshot.md`
+4. `AGENTS.md`
+
+按场景找文档：
+
+- 想看项目目标、主闭环和路线图：`docs/项目总览与路线图.md`
+- 想看当前最新状态：`docs/progress/current_snapshot.md`
+- 想看完整方案：`docs/spec/技术方案_v7.9.md`
+- 想看架构专题：`docs/architecture/`
+- 想看问题复盘和完成度：`docs/progress/`
 
 ## 快速启动（约15分钟）
 
@@ -78,6 +96,37 @@ npm run dev
 - 这个地址是临时的，每次重启都可能变化，只适合测试
 - 如果需要“外网打开后还能正常登录”，请把 `.env.local` 里的 `NEXTAUTH_URL` 改成当前 Tunnel 地址后重启 `npm run dev`
 - 若想手动安装，Mac 仍推荐：`brew install cloudflared`
+
+### Docker 开发挂载 + 自动 Tunnel
+
+如果你在本地通过 Docker 做开发，并希望每次启动自动带一个外网地址：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+
+这套开发态配置会同时做三件事：
+
+- `app` 使用源码挂载运行 `next dev`
+- `db` 启动本地 PostgreSQL + pgvector
+- `tunnel` sidecar 自动创建 Cloudflare Quick Tunnel
+
+启动后可从两个位置查看最新地址：
+
+- 登录页顶部的“当前外网地址”
+- `.runtime/tunnel-url.txt`
+
+调试 tunnel：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f tunnel
+```
+
+注意：
+
+- 当前默认是 Quick Tunnel，每次重启域名都会变
+- 登录页展示的是“当前可分享地址”，不是稳定回调域名
+- 若要“外网可登录”长期稳定，仍建议切到 Named Tunnel，并把 `NEXTAUTH_URL` 固定到命名域名
 
 ---
 

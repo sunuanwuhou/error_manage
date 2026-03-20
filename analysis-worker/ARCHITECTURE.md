@@ -1,6 +1,7 @@
 # 分析服务架构设计
 
-> 状态：待实现 · 设计已定稿
+> 状态：早期设计稿，保留作历史背景参考
+> 当前执行口径请优先查看 `docs/architecture/Codex高频分析执行方案.md` 与 `docs/architecture/Codex分析执行手册.md`
 
 ---
 

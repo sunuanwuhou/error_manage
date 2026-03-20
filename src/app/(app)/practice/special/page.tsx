@@ -10,11 +10,26 @@ interface ModeItem {
   userErrorId: string; questionId: string
   masteryPercent: number; questionType: string
   isHot: boolean; reviewCount: number
-  question: { content: string; type: string; options: string; answer: string; sharedAiAnalysis?: string }
+  question: { content: string; questionImage?: string | null; type: string; options: string; answer: string; sharedAiAnalysis?: string }
   aiActionRule?: string
 }
 
 interface TagItem { tag: string; count: number }
+
+function formatQuestionContent(content: string, hasImage: boolean) {
+  if (!content) return ''
+  const next = hasImage
+    ? content.replace(/(\[图\]|@t\d+)/gi, '').trim()
+    : content.replace(/@t\d+/gi, '[图]')
+  const fixed = next.replace(
+    /每个办事窗口办理每笔业务的用时缩短到以前的$/g,
+    '每个办事窗口办理每笔业务的用时缩短到以前的2/3'
+  ).replace(
+    /每个办事窗口办理每笔业务的用时缩短到以前的\[图\]/gi,
+    '每个办事窗口办理每笔业务的用时缩短到以前的2/3'
+  )
+  return fixed || (hasImage ? '请结合图片作答。' : content)
+}
 
 export default function SpecialModesPage() {
   const router  = useRouter()
@@ -132,25 +147,28 @@ export default function SpecialModesPage() {
       )}
 
       {/* 题目列表预览（点击进入练习） */}
-      <div className="space-y-2 mb-6">
+      <div className="mb-6 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
         {items.map((item, i) => {
-          const opts = (() => { try { return JSON.parse(item.question.options) } catch { return [] } })()
+          const displayContent = formatQuestionContent(item.question.content, Boolean(item.question.questionImage))
           return (
-            <div key={item.userErrorId} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+            <div key={item.userErrorId} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 lg:p-5">
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs text-gray-400">#{i+1}</span>
                 <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-lg">{item.questionType}</span>
                 <span className="text-xs text-gray-400">mastery {item.masteryPercent}%</span>
                 {item.isHot && <span className="text-xs text-red-500">🔥</span>}
               </div>
-              <p className="text-sm text-gray-700 line-clamp-2">{item.question.content}</p>
+              {item.question.questionImage && (
+                <img src={item.question.questionImage} alt="题目预览图" className="mb-3 w-full rounded-xl border border-gray-100 object-contain lg:h-48" />
+              )}
+              <p className="text-sm text-gray-700 line-clamp-3">{displayContent}</p>
             </div>
           )
         })}
       </div>
 
       <Link href={`/practice/focused?mode=${mode}${tag ? `&tag=${encodeURIComponent(tag)}` : ''}`}
-        className="block w-full py-4 bg-blue-600 text-white font-bold rounded-2xl text-center text-base">
+        className="block w-full rounded-2xl bg-blue-600 py-4 text-center text-base font-bold text-white lg:sticky lg:bottom-6">
         开始专项训练 →
       </Link>
     </div>

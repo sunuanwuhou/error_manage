@@ -10,6 +10,9 @@ const schema = z.object({
   content:   z.string().min(1),
   type:      z.string().default('通用'),
   subtype:   z.string().default(''),
+  module2:   z.string().default(''),
+  module3:   z.string().default(''),
+  sourceErrorIds: z.string().default(''),
   isPrivate: z.boolean().default(false),
 })
 
@@ -17,15 +20,25 @@ function normalizeComparableText(value: string) {
   return value.trim().replace(/\s+/g, ' ')
 }
 
-function isKnowledgePointDuplicate(note: { title: string; content: string; subtype: string | null }, target: {
+function isKnowledgePointDuplicate(note: {
+  title: string
+  content: string
+  subtype: string | null
+  module2: string | null
+  module3: string | null
+}, target: {
   title: string
   content: string
   subtype: string
+  module2: string
+  module3: string
 }) {
   const sameSubtype = normalizeComparableText(note.subtype ?? '') === target.subtype
+  const sameModule2 = normalizeComparableText(note.module2 ?? '') === target.module2
+  const sameModule3 = normalizeComparableText(note.module3 ?? '') === target.module3
   const sameTitle = normalizeComparableText(note.title) === target.title
   const sameContent = normalizeComparableText(note.content) === target.content
-  return sameSubtype && (sameTitle || sameContent)
+  return sameSubtype && sameModule2 && sameModule3 && (sameTitle || sameContent)
 }
 
 export async function GET() {
@@ -48,6 +61,9 @@ export async function POST(req: NextRequest) {
   const normalizedTitle = normalizeComparableText(parsed.data.title)
   const normalizedContent = normalizeComparableText(parsed.data.content)
   const normalizedSubtype = normalizeComparableText(parsed.data.subtype)
+  const normalizedModule2 = normalizeComparableText(parsed.data.module2)
+  const normalizedModule3 = normalizeComparableText(parsed.data.module3)
+  const normalizedSourceErrorIds = normalizeComparableText(parsed.data.sourceErrorIds)
 
   const existing = await prisma.userNote.findMany({
     where: {
@@ -60,6 +76,8 @@ export async function POST(req: NextRequest) {
       title: true,
       content: true,
       subtype: true,
+      module2: true,
+      module3: true,
       updatedAt: true,
     },
     orderBy: { updatedAt: 'desc' },
@@ -70,6 +88,8 @@ export async function POST(req: NextRequest) {
     title: normalizedTitle,
     content: normalizedContent,
     subtype: normalizedSubtype,
+    module2: normalizedModule2,
+    module3: normalizedModule3,
   }))
 
   if (duplicate) {
@@ -83,6 +103,9 @@ export async function POST(req: NextRequest) {
       title: normalizedTitle,
       content: normalizedContent,
       subtype: normalizedSubtype,
+      module2: normalizedModule2,
+      module3: normalizedModule3,
+      sourceErrorIds: normalizedSourceErrorIds,
     },
   })
   return NextResponse.json(note, { status: 201 })
@@ -96,7 +119,16 @@ export async function PUT(req: NextRequest) {
   const { id, ...data } = body
   const note = await prisma.userNote.findFirst({ where: { id, userId } })
   if (!note) return NextResponse.json({ error: '不存在' }, { status: 404 })
-  const updated = await prisma.userNote.update({ where: { id }, data })
+  const normalizedData = {
+    ...data,
+    ...(typeof data.title === 'string' ? { title: normalizeComparableText(data.title) } : {}),
+    ...(typeof data.content === 'string' ? { content: normalizeComparableText(data.content) } : {}),
+    ...(typeof data.subtype === 'string' ? { subtype: normalizeComparableText(data.subtype) } : {}),
+    ...(typeof data.module2 === 'string' ? { module2: normalizeComparableText(data.module2) } : {}),
+    ...(typeof data.module3 === 'string' ? { module3: normalizeComparableText(data.module3) } : {}),
+    ...(typeof data.sourceErrorIds === 'string' ? { sourceErrorIds: normalizeComparableText(data.sourceErrorIds) } : {}),
+  }
+  const updated = await prisma.userNote.update({ where: { id }, data: normalizedData })
   return NextResponse.json(updated)
 }
 

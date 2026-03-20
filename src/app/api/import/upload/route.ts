@@ -1,12 +1,10 @@
 // src/app/api/import/upload/route.ts
-// 文件上传 + 解析（PDF / Excel / CSV）
+// 文件上传 + 解析（DOCX）
 // 返回解析预览，不直接入库，等用户确认
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
-import { parsePdfText } from '@/lib/parsers/pdf-parser'
-import { parseExcelBuffer } from '@/lib/parsers/excel-parser'
 import { parseDocxBuffer } from '@/lib/parsers/docx-parser'
 
 const MAX_SIZE = 20 * 1024 * 1024  // 20MB
@@ -30,30 +28,16 @@ export async function POST(req: NextRequest) {
   let warnings:  string[] = []
 
   try {
-    if (filename.endsWith('.pdf')) {
-      // ---- PDF 解析 ----
-      const pdfParse = (await import('pdf-parse')).default
-      const pdfData  = await pdfParse(buffer)
-      const result   = parsePdfText(pdfData.text)
-      questions      = result.questions
-      warnings       = result.warnings
-      if (pdfData.numpages) {
-        warnings.unshift(`PDF 共 ${pdfData.numpages} 页，解析到 ${questions.length} 道题`)
-      }
-    } else if (filename.match(/\.(xlsx|xls|csv)$/)) {
-      // ---- Excel/CSV 解析 ----
-      const result = await parseExcelBuffer(buffer)
-      questions    = result.questions
-      warnings     = result.warnings
-      warnings.unshift(`Sheet: ${result.sheetName}，共 ${questions.length} 行`)
-    } else if (filename.endsWith('.docx')) {
+    if (filename.endsWith('.docx')) {
       // ---- DOCX 解析 ----
       const result = await parseDocxBuffer(buffer)
       questions    = result.questions
       warnings     = result.warnings
       warnings.unshift(`DOCX 共解析到 ${questions.length} 道题`)
+    } else if (filename.endsWith('.doc')) {
+      return NextResponse.json({ error: '暂不直接支持 .doc，请先另存为 .docx 后再导入' }, { status: 400 })
     } else {
-      return NextResponse.json({ error: '不支持的文件格式，请上传 PDF、DOCX、Excel(.xlsx/.xls) 或 CSV' }, { status: 400 })
+      return NextResponse.json({ error: '当前只支持 DOCX 导入，请上传 .docx 文件' }, { status: 400 })
     }
   } catch (err: any) {
     return NextResponse.json({ error: `解析失败：${err.message}` }, { status: 500 })

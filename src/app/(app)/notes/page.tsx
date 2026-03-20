@@ -1,19 +1,17 @@
 'use client'
-// src/app/(app)/notes/page.tsx — 笔记 + 规律固化（B3+B4）
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { format } from 'date-fns'
 
-type Tab = 'notes' | 'insights'
-
 const INSIGHT_TYPES = [
-  { value: 'rule',    label: '做题规则', color: 'bg-blue-100 text-blue-700' },
-  { value: 'trap',    label: '易错陷阱', color: 'bg-red-100 text-red-700' },
+  { value: 'rule', label: '做题规则', color: 'bg-blue-100 text-blue-700' },
+  { value: 'trap', label: '易错陷阱', color: 'bg-red-100 text-red-700' },
   { value: 'formula', label: '公式记忆', color: 'bg-purple-100 text-purple-700' },
 ]
-const NOTE_SOURCE_OPTIONS = ['通用', '错题复盘', '套卷总结', 'AI 草稿', '临考提醒']
-const QUESTION_TYPES = ['判断推理','言语理解','数量关系','资料分析','常识判断']
+
+const NOTE_SOURCE_OPTIONS = ['通用', '错题复盘', '套卷总结', 'AI 草稿', '临考提醒', '规则沉淀']
+const QUESTION_TYPES = ['判断推理', '言语理解', '数量关系', '资料分析', '常识判断']
 
 function normalizeText(value: unknown) {
   return typeof value === 'string' ? value.trim() : ''
@@ -28,10 +26,200 @@ function buildInsightSourceLabel(ins: any) {
   return '未补来源'
 }
 
+function buildKnowledgePath(note: any) {
+  return [note.type, inferDisplayModule2(note), inferDisplayModule3(note)]
+    .filter(Boolean)
+    .join(' / ')
+}
+
+function inferDisplayModule2(note: any) {
+  const explicit = normalizeText(note.module2)
+  if (explicit) return explicit
+  const content = `${normalizeText(note.title)} ${normalizeText(note.content)}`
+  if (note.type === '判断推理') {
+    if (content.includes('[图]') || content.includes('图形')) return '图形推理'
+    if (content.includes('定义')) return '定义判断'
+    return '判断推理'
+  }
+  if (note.type === '常识判断') {
+    if (/(习近平|共产党|党|军队|马克思主义|社会主义|南昌起义|古田会议)/.test(content)) return '政治'
+    if (/(经济|消费|需求侧|供给侧|市场)/.test(content)) return '经济'
+    if (/(法律|法治|宪法|刑法|民法)/.test(content)) return '法律'
+    return '常识判断'
+  }
+  if (note.type === '资料分析') return '资料分析'
+  if (note.type === '数量关系') return '数量关系'
+  if (note.type === '言语理解') return '言语理解'
+  return ''
+}
+
+function inferDisplayModule3(note: any) {
+  const explicit = normalizeText(note.module3)
+  if (explicit) return explicit
+  const content = `${normalizeText(note.title)} ${normalizeText(note.content)}`
+  if (note.type === '判断推理') {
+    if (content.includes('[图]') || content.includes('图形')) return '图形规律'
+  }
+  if (note.type === '常识判断') {
+    if (/(习近平|共产党|党|军队|马克思主义|社会主义|南昌起义|古田会议)/.test(content)) return '党史理论'
+    if (/(经济|消费|需求侧|供给侧|市场)/.test(content)) return '宏观经济'
+    if (/(法律|法治|宪法|刑法|民法)/.test(content)) return '法治常识'
+  }
+  return ''
+}
+
+function buildKnowledgeTree(notes: any[]) {
+  const root = new Map<string, Map<string, Map<string, any[]>>>()
+  notes.forEach(note => {
+    const level1 = normalizeText(note.type) || '未分类'
+    const level2 = inferDisplayModule2(note) || '通用模块'
+    const level3 = inferDisplayModule3(note) || '知识点'
+    if (!root.has(level1)) root.set(level1, new Map())
+    const level2Map = root.get(level1)!
+    if (!level2Map.has(level2)) level2Map.set(level2, new Map())
+    const level3Map = level2Map.get(level2)!
+    if (!level3Map.has(level3)) level3Map.set(level3, [])
+    level3Map.get(level3)!.push(note)
+  })
+
+  return Array.from(root.entries()).map(([level1, level2Map]) => ({
+    level1,
+    count: Array.from(level2Map.values()).reduce(
+      (sum, level3Map) => sum + Array.from(level3Map.values()).reduce((inner, items) => inner + items.length, 0),
+      0
+    ),
+    children: Array.from(level2Map.entries()).map(([level2, level3Map]) => ({
+      level2,
+      count: Array.from(level3Map.values()).reduce((sum, items) => sum + items.length, 0),
+      children: Array.from(level3Map.entries()).map(([level3, items]) => ({
+        level3,
+        count: items.length,
+        notes: items,
+      })),
+    })),
+  }))
+}
+
+function buildPracticeSearchLink(note: any) {
+  const params = new URLSearchParams()
+  params.set('type', normalizeText(note.type))
+  const query = normalizeText(note.title) || normalizeText(note.module3) || normalizeText(note.module2)
+  if (query) params.set('q', query)
+  return `/search?${params.toString()}`
+}
+
+function findRelatedInsights(note: any, insights: any[]) {
+  return insights.filter(ins => {
+    const skillTag = normalizeText(ins.skillTag)
+    return skillTag === normalizeText(note.title)
+      || skillTag === normalizeText(note.module3)
+      || skillTag === normalizeText(note.module2)
+  })
+}
+
+function parseOptions(raw: string | undefined) {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function buildDisplayNoteBody(content: string | null | undefined) {
+  const normalized = normalizeText(content)
+  if (!normalized) return ''
+
+  return normalized
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !/^题目[:：]/.test(line))
+    .filter(line => !/^来源题目[:：]/.test(line))
+    .join('\n\n')
+}
+
+function getLinkedCount(note: any) {
+  return normalizeText(note.sourceErrorIds).split(',').map(item => item.trim()).filter(Boolean).length
+}
+
+function buildLevel3Label(level3: { level3: string; notes: any[] }) {
+  const singleKnowledgeNote = level3.notes.length === 1 ? level3.notes[0] : null
+  if (!singleKnowledgeNote) return level3.level3
+
+  const genericLabels = new Set(['知识点', '通用知识点', '未细分'])
+  if (genericLabels.has(level3.level3) || normalizeText(singleKnowledgeNote.title) === level3.level3) {
+    return normalizeText(singleKnowledgeNote.title) || level3.level3
+  }
+  return level3.level3
+}
+
+function buildLevel3Meta(level3: { count: number; notes: any[] }) {
+  const singleKnowledgeNote = level3.notes.length === 1 ? level3.notes[0] : null
+  const linkedCount = singleKnowledgeNote ? getLinkedCount(singleKnowledgeNote) : 0
+  if (singleKnowledgeNote && linkedCount > 0) return `1 篇 Markdown 笔记 · 关联错题 ${linkedCount} 道`
+  if (singleKnowledgeNote) return '1 篇 Markdown 笔记'
+  return `${level3.count} 个知识点`
+}
+
+function renderSimpleMarkdown(content: string) {
+  const lines = content.split('\n')
+  const nodes: JSX.Element[] = []
+
+  lines.forEach((rawLine, index) => {
+    const line = rawLine.trim()
+    if (!line) {
+      nodes.push(<div key={`space-${index}`} className="h-3" />)
+      return
+    }
+
+    const imageMatch = line.match(/^!\[(.*?)\]\((.+)\)$/)
+    if (imageMatch) {
+      nodes.push(
+        <figure key={`img-${index}`} className="my-3">
+          <img src={imageMatch[2]} alt={imageMatch[1] || '知识点图片'} className="w-full rounded-xl border border-gray-100 object-contain" />
+          {imageMatch[1] ? <figcaption className="mt-1 text-xs text-gray-400">{imageMatch[1]}</figcaption> : null}
+        </figure>
+      )
+      return
+    }
+
+    if (line.startsWith('### ')) {
+      nodes.push(<h3 key={`h3-${index}`} className="mt-3 text-base font-semibold text-gray-900">{line.slice(4)}</h3>)
+      return
+    }
+    if (line.startsWith('## ')) {
+      nodes.push(<h2 key={`h2-${index}`} className="mt-4 text-lg font-semibold text-gray-900">{line.slice(3)}</h2>)
+      return
+    }
+    if (line.startsWith('# ')) {
+      nodes.push(<h1 key={`h1-${index}`} className="mt-4 text-xl font-bold text-gray-900">{line.slice(2)}</h1>)
+      return
+    }
+    if (line.startsWith('- ')) {
+      nodes.push(
+        <div key={`li-${index}`} className="flex gap-2 text-sm leading-7 text-gray-700">
+          <span className="mt-2 h-1.5 w-1.5 rounded-full bg-gray-400" />
+          <span>{line.slice(2)}</span>
+        </div>
+      )
+      return
+    }
+
+    nodes.push(
+      <p key={`p-${index}`} className="text-sm leading-7 text-gray-700 whitespace-pre-wrap">
+        {line}
+      </p>
+    )
+  })
+
+  return nodes
+}
+
 export default function NotesPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const [tab, setTab]     = useState<Tab>('notes')
   const [notes, setNotes] = useState<any[]>([])
   const [insights, setInsights] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -39,13 +227,23 @@ export default function NotesPage() {
   const [insightsError, setInsightsError] = useState('')
   const [searchText, setSearchText] = useState('')
   const [noteTypeFilter, setNoteTypeFilter] = useState('全部')
+  const [module2Filter, setModule2Filter] = useState('全部')
+  const [module3Filter, setModule3Filter] = useState('全部')
   const [noteSourceFilter, setNoteSourceFilter] = useState('全部')
-  const [insightTypeFilter, setInsightTypeFilter] = useState('全部')
-  const [insightSourceFilter, setInsightSourceFilter] = useState('全部')
   const [showForm, setShowForm] = useState(false)
   const [editItem, setEditItem] = useState<any>(null)
   const [draftItem, setDraftItem] = useState<any>(null)
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
+  const [linkedErrors, setLinkedErrors] = useState<any[] | null>(null)
+  const [linkedErrorsTitle, setLinkedErrorsTitle] = useState('')
+  const [linkedErrorIndex, setLinkedErrorIndex] = useState(0)
+  const [inlineEditId, setInlineEditId] = useState('')
+  const [inlineDraftContent, setInlineDraftContent] = useState('')
+  const [inlinePreview, setInlinePreview] = useState(false)
+  const [inlineSaving, setInlineSaving] = useState(false)
+  const [expandedLevel1, setExpandedLevel1] = useState<Record<string, boolean>>({})
+  const [expandedLevel2, setExpandedLevel2] = useState<Record<string, boolean>>({})
+  const [expandedLevel3, setExpandedLevel3] = useState<Record<string, boolean>>({})
 
   function loadData() {
     setLoading(true)
@@ -54,12 +252,12 @@ export default function NotesPage() {
     Promise.allSettled([
       fetch('/api/notes').then(async r => {
         const data = await r.json()
-        if (!r.ok) throw new Error(data.error ?? '笔记加载失败')
+        if (!r.ok) throw new Error(data.error ?? '知识点加载失败')
         return data
       }),
       fetch('/api/insights').then(async r => {
         const data = await r.json()
-        if (!r.ok) throw new Error(data.error ?? '规律加载失败')
+        if (!r.ok) throw new Error(data.error ?? '历史规则摘要加载失败')
         return data
       }),
     ]).then(([notesResult, insightsResult]) => {
@@ -67,18 +265,18 @@ export default function NotesPage() {
         setNotes(notesResult.value)
       } else {
         setNotes([])
-        setNotesError(notesResult.reason?.message ?? '笔记加载失败')
+        setNotesError(notesResult.reason?.message ?? '知识点加载失败')
       }
 
       if (insightsResult.status === 'fulfilled') {
         setInsights(insightsResult.value)
       } else {
         setInsights([])
-        setInsightsError(insightsResult.reason?.message ?? '规律加载失败')
+        setInsightsError(insightsResult.reason?.message ?? '历史规则摘要加载失败')
       }
 
       if (notesResult.status === 'rejected' || insightsResult.status === 'rejected') {
-        setMessage({ type: 'err', text: '部分内容加载失败，但你仍可以继续使用另一部分。' })
+        setMessage({ type: 'err', text: '部分内容加载失败，但知识树主流程仍可继续使用。' })
       }
       setLoading(false)
     })
@@ -91,48 +289,61 @@ export default function NotesPage() {
     if (draft !== '1') return
 
     const draftKind = searchParams.get('draftKind') === 'insights' ? 'insights' : 'notes'
-    setTab(draftKind)
+    const title = searchParams.get('draftTitle') || searchParams.get('draftSkillTag') || ''
+    const content = draftKind === 'insights'
+      ? [
+          searchParams.get('draftFinalContent') ? `规则摘要：${searchParams.get('draftFinalContent')}` : '',
+          searchParams.get('draftAiDraft') ? `AI 草稿：${searchParams.get('draftAiDraft')}` : '',
+          searchParams.get('draftDomainExamples') ? `典型例子：${searchParams.get('draftDomainExamples')}` : '',
+        ].filter(Boolean).join('\n\n')
+      : (searchParams.get('draftContent') ?? '')
+
     setEditItem(null)
     setDraftItem({
+      kind: 'notes',
       type: searchParams.get('draftType') ?? undefined,
-      subtype: searchParams.get('draftSubtype') ?? undefined,
-      title: searchParams.get('draftTitle') ?? '',
-      content: searchParams.get('draftContent') ?? '',
+      subtype: draftKind === 'insights' ? '规则沉淀' : (searchParams.get('draftSubtype') ?? undefined),
+      module2: searchParams.get('draftModule2') ?? '',
+      module3: searchParams.get('draftModule3') ?? '',
+      title,
+      content,
       isPrivate: searchParams.get('draftPrivate') === '1',
-      skillTag: searchParams.get('draftSkillTag') ?? '',
-      insightType: searchParams.get('draftInsightType') ?? undefined,
-      finalContent: searchParams.get('draftFinalContent') ?? '',
-      aiDraft: searchParams.get('draftAiDraft') ?? '',
       sourceErrorIds: searchParams.get('draftSourceErrorIds') ?? '',
-      domainExamples: searchParams.get('draftDomainExamples') ?? '',
     })
     setShowForm(true)
     router.replace('/notes', { scroll: false })
   }, [router, searchParams])
 
   const normalizedSearch = searchText.trim().toLowerCase()
+  const module2Options = useMemo(() => {
+    const scoped = noteTypeFilter === '全部' ? notes : notes.filter(n => n.type === noteTypeFilter)
+    return ['全部', ...Array.from(new Set(scoped.map(n => normalizeText(n.module2)).filter(Boolean)))]
+  }, [notes, noteTypeFilter])
+
+  const module3Options = useMemo(() => {
+    const scoped = notes.filter(n => {
+      if (noteTypeFilter !== '全部' && n.type !== noteTypeFilter) return false
+      if (module2Filter !== '全部' && normalizeText(n.module2) !== module2Filter) return false
+      return true
+    })
+    return ['全部', ...Array.from(new Set(scoped.map(n => normalizeText(n.module3)).filter(Boolean)))]
+  }, [notes, noteTypeFilter, module2Filter])
+
   const filteredNotes = notes.filter(n => {
-    const matchesType = noteTypeFilter === '全部' || n.type === noteTypeFilter
-    if (!matchesType) return false
+    if (noteTypeFilter !== '全部' && n.type !== noteTypeFilter) return false
+    if (module2Filter !== '全部' && normalizeText(n.module2) !== module2Filter) return false
+    if (module3Filter !== '全部' && normalizeText(n.module3) !== module3Filter) return false
     const noteSource = normalizeText(n.subtype) || '通用'
     if (noteSourceFilter !== '全部' && noteSource !== noteSourceFilter) return false
     if (!normalizedSearch) return true
-    return [n.title, n.content, n.type, n.subtype]
+    return [n.title, n.content, n.type, n.subtype, n.module2, n.module3, n.sourceErrorIds]
       .filter(Boolean)
       .some((value: string) => value.toLowerCase().includes(normalizedSearch))
   })
-  const filteredInsights = insights.filter(ins => {
-    const matchesType = insightTypeFilter === '全部' || ins.insightType === insightTypeFilter
-    if (!matchesType) return false
-    if (insightSourceFilter !== '全部' && buildInsightSourceLabel(ins) !== insightSourceFilter) return false
-    if (!normalizedSearch) return true
-    return [ins.skillTag, ins.finalContent, ins.aiDraft, ins.insightType, ins.sourceErrorIds, ins.domainExamples]
-      .filter(Boolean)
-      .some((value: string) => value.toLowerCase().includes(normalizedSearch))
-  })
+  const knowledgeTree = useMemo(() => buildKnowledgeTree(filteredNotes), [filteredNotes])
 
   async function deleteNote(id: string) {
-    if (!confirm('删除这条笔记？')) return
+    if (!confirm('删除这个知识点？')) return
     const res = await fetch(`/api/notes?id=${id}`, { method: 'DELETE' })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
@@ -143,25 +354,95 @@ export default function NotesPage() {
     loadData()
   }
 
-  async function deleteInsight(id: string) {
-    if (!confirm('删除这条规律？')) return
-    const res = await fetch(`/api/insights?id=${id}`, { method: 'DELETE' })
+  async function openLinkedErrors(note: any) {
+    const ids = normalizeText(note.sourceErrorIds)
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean)
+    if (ids.length === 0) return
+
+    const res = await fetch(`/api/errors?ids=${encodeURIComponent(ids.join(','))}`)
+    const data = await res.json().catch(() => ({ items: [] }))
+    setLinkedErrors(data.items ?? [])
+    setLinkedErrorsTitle(note.title)
+    setLinkedErrorIndex(0)
+  }
+
+  function startInlineEdit(note: any) {
+    setInlineEditId(note.id)
+    setInlineDraftContent(note.content ?? '')
+    setInlinePreview(false)
+  }
+
+  function cancelInlineEdit() {
+    setInlineEditId('')
+    setInlineDraftContent('')
+    setInlinePreview(false)
+    setInlineSaving(false)
+  }
+
+  async function saveInlineEdit(note: any) {
+    setInlineSaving(true)
+    const res = await fetch('/api/notes', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: note.id,
+        title: note.title,
+        content: inlineDraftContent,
+        subtype: note.subtype,
+        module2: note.module2,
+        module3: note.module3,
+        sourceErrorIds: note.sourceErrorIds,
+        isPrivate: note.isPrivate,
+      }),
+    })
+
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      setMessage({ type: 'err', text: data.error ?? '删除失败' })
+      setMessage({ type: 'err', text: data.error ?? '保存失败' })
+      setInlineSaving(false)
       return
     }
-    setMessage({ type: 'ok', text: '删除成功' })
+
+    setMessage({ type: 'ok', text: '知识点已更新' })
+    cancelInlineEdit()
     loadData()
+  }
+
+  async function handleInlinePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const image = Array.from(event.clipboardData.items).find(item => item.type.startsWith('image/'))
+    if (!image) return
+
+    event.preventDefault()
+    const file = image.getAsFile()
+    if (!file) return
+
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(file)
+    })
+
+    const markdown = `![贴图](${dataUrl})`
+    setInlineDraftContent(prev => (prev ? `${prev}\n\n${markdown}` : markdown))
+    setMessage({ type: 'ok', text: '图片已贴入知识点正文' })
   }
 
   return (
     <div className="max-w-lg mx-auto px-4 pt-4 pb-8">
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-bold text-gray-900">笔记 & 规律</h1>
-        <button onClick={() => { setEditItem(null); setShowForm(true) }}
-          className="bg-blue-600 text-white text-sm px-4 py-2 rounded-xl font-medium min-h-[44px] flex items-center">
-          + 新增
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">知识树</h1>
+          <p className="text-xs text-gray-400 mt-1">按 一级模块 / 二级模块 / 三级模块 / 具体知识点 组织。</p>
+          <p className="text-xs text-gray-400 mt-1">一个知识点就是一篇可编辑的 Markdown 笔记，错题和规则摘要挂在这篇笔记下面。</p>
+        </div>
+        <button
+          onClick={() => { setEditItem(null); setDraftItem(null); setShowForm(true) }}
+          className="bg-blue-600 text-white text-sm px-4 py-2 rounded-xl font-medium min-h-[44px] flex items-center"
+        >
+          + 新增知识点
         </button>
       </div>
 
@@ -171,264 +452,427 @@ export default function NotesPage() {
         </div>
       )}
 
-      {/* Tab */}
-      <div className="flex gap-2 mb-4">
-        {[{ key: 'notes', label: `笔记 ${notes.length}` }, { key: 'insights', label: `规律 ${insights.length}` }].map(t => (
-          <button key={t.key} onClick={() => setTab(t.key as Tab)}
-            className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-colors
-              ${tab === t.key ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200'}`}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="mb-4 space-y-3 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-        <div className="grid gap-3 sm:grid-cols-[1fr_180px]">
-          <input
-            value={searchText}
-            onChange={e => setSearchText(e.target.value)}
-            placeholder={tab === 'notes' ? '搜索标题、内容、题型、来源' : '搜索考点、规律内容、来源'}
-            className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-          />
-          {tab === 'notes' ? (
-            <div className="grid grid-cols-2 gap-3">
-              <select
-                value={noteTypeFilter}
-                onChange={e => setNoteTypeFilter(e.target.value)}
-                className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                {['全部', ...QUESTION_TYPES].map(type => <option key={type}>{type}</option>)}
-              </select>
-              <select
-                value={noteSourceFilter}
-                onChange={e => setNoteSourceFilter(e.target.value)}
-                className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                {['全部', ...NOTE_SOURCE_OPTIONS].map(type => <option key={type}>{type}</option>)}
-              </select>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3">
-              <select
-                value={insightTypeFilter}
-                onChange={e => setInsightTypeFilter(e.target.value)}
-                className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                {['全部', ...INSIGHT_TYPES.map(item => item.value)].map(type => (
-                  <option key={type} value={type}>
-                    {type === '全部' ? type : INSIGHT_TYPES.find(item => item.value === type)?.label ?? type}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={insightSourceFilter}
-                onChange={e => setInsightSourceFilter(e.target.value)}
-                className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                {['全部', '来源完整', '有来源题目', '有典型例子', '未补来源'].map(type => (
-                  <option key={type}>{type}</option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
-        <p className="text-xs text-gray-400">
-          {tab === 'notes'
-            ? `共 ${notes.length} 条笔记，当前显示 ${filteredNotes.length} 条`
-            : `共 ${insights.length} 条规律，当前显示 ${filteredInsights.length} 条`}
+      <div className="mb-4 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm lg:p-5">
+        <input
+          value={searchText}
+          onChange={e => setSearchText(e.target.value)}
+          placeholder="搜索知识点"
+          className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+        />
+        <p className="mt-3 text-xs text-gray-400">
+          共 {notes.length} 个知识点，当前显示 {filteredNotes.length} 个
         </p>
       </div>
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-2">
-        <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-400 mb-2">笔记来源分布</p>
-          <div className="flex flex-wrap gap-2">
-            {NOTE_SOURCE_OPTIONS.map(source => {
-              const count = notes.filter(n => (normalizeText(n.subtype) || '通用') === source).length
-              return (
-                <span key={source} className="rounded-full bg-gray-50 px-3 py-1 text-xs text-gray-600">
-                  {source} {count}
-                </span>
-              )
-            })}
-          </div>
-        </div>
-        <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-400 mb-2">规律来源完整度</p>
-          <div className="flex flex-wrap gap-2">
-            {['来源完整', '有来源题目', '有典型例子', '未补来源'].map(label => {
-              const count = insights.filter(ins => buildInsightSourceLabel(ins) === label).length
-              return (
-                <span key={label} className="rounded-full bg-gray-50 px-3 py-1 text-xs text-gray-600">
-                  {label} {count}
-                </span>
-              )
-            })}
-          </div>
-        </div>
-      </div>
-
       {loading ? (
-        <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-20 bg-gray-100 rounded-2xl animate-pulse" />)}</div>
-      ) : tab === 'notes' ? (
-        notesError ? (
-          <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">
-            {notesError}
-          </div>
-        ) :
-        filteredNotes.length === 0 ? (
-          <div className="text-center py-12 text-gray-400"><p className="text-4xl mb-2">📝</p><p>还没有笔记</p></div>
-        ) : (
-          <div className="space-y-3">
-            {filteredNotes.map(n => (
-              <div key={n.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-                <div className="flex items-start justify-between gap-2 mb-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-lg">{n.type}</span>
-                    <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg">{normalizeText(n.subtype) || '通用'}</span>
-                    {n.isPrivate && <span className="text-xs text-gray-400">🔒</span>}
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => { setEditItem(n); setShowForm(true) }} className="text-xs text-blue-500">编辑</button>
-                    <button onClick={() => deleteNote(n.id)} className="text-xs text-red-400">删除</button>
-                  </div>
-                </div>
-                <p className="font-medium text-gray-900 text-sm">{n.title}</p>
-                <p className="text-xs text-gray-500 mt-1 line-clamp-2">{n.content}</p>
-                <div className="mt-2 flex items-center justify-between gap-3 text-xs text-gray-300">
-                  <p>{format(new Date(n.updatedAt), 'MM-dd HH:mm')}</p>
-                  <p>{n.isPrivate ? '仅自己可见' : '可用于整理复盘'}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )
+        <div className="space-y-3">{[1, 2, 3].map(i => <div key={i} className="h-20 bg-gray-100 rounded-2xl animate-pulse" />)}</div>
       ) : (
-        insightsError ? (
-          <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">
-            {insightsError}
-          </div>
-        ) :
-        filteredInsights.length === 0 ? (
-          <div className="text-center py-12 text-gray-400"><p className="text-4xl mb-2">🧠</p><p>还没有固化规律</p><p className="text-xs mt-1">积累做题规律，AI出变式题时会用到</p></div>
-        ) : (
-          <div className="space-y-3">
-            {filteredInsights.map(ins => {
-              const typeConfig = INSIGHT_TYPES.find(t => t.value === ins.insightType)
-              return (
-                <div key={ins.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-                  <div className="mb-2 flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeConfig?.color ?? 'bg-gray-100 text-gray-500'}`}>
-                        {typeConfig?.label}
-                      </span>
-                      <span className="text-xs text-gray-500">{ins.skillTag}</span>
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => { setEditItem(ins); setShowForm(true) }} className="text-xs text-blue-500">编辑</button>
-                      <button onClick={() => deleteInsight(ins.id)} className="text-xs text-red-400">删除</button>
-                    </div>
+        <>
+          {notesError ? (
+            <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+              {notesError}
+            </div>
+          ) : filteredNotes.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <p className="text-4xl mb-2">📝</p>
+              <p>还没有知识点</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {knowledgeTree.map(level1 => {
+                const level1Key = level1.level1
+                const level1Open = expandedLevel1[level1Key] ?? true
+                return (
+                  <div key={level1Key} className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedLevel1(prev => ({ ...prev, [level1Key]: !level1Open }))}
+                      className="flex w-full items-center justify-between px-4 py-4 text-left"
+                    >
+                      <div>
+                        <p className="font-semibold text-gray-900">{level1.level1}</p>
+                        <p className="text-xs text-gray-400 mt-1">{level1.count} 个知识点</p>
+                      </div>
+                      <span className="text-gray-300">{level1Open ? '−' : '+'}</span>
+                    </button>
+                    {level1Open && (
+                      <div className="border-t border-gray-100 px-3 py-3 space-y-3">
+                        {level1.children.map(level2 => {
+                          const level2Key = `${level1Key}::${level2.level2}`
+                          const level2Open = expandedLevel2[level2Key] ?? false
+                          return (
+                            <div key={level2Key} className="rounded-2xl bg-gray-50 px-3 py-3">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedLevel2(prev => ({ ...prev, [level2Key]: !level2Open }))}
+                                className="flex w-full items-center justify-between text-left"
+                              >
+                                <div>
+                                  <p className="text-sm font-semibold text-gray-800">{level2.level2}</p>
+                                  <p className="text-xs text-gray-400 mt-1">{level2.count} 个知识点</p>
+                                </div>
+                                <span className="text-gray-300">{level2Open ? '−' : '+'}</span>
+                              </button>
+                              {level2Open && (
+                                <div className="mt-3 space-y-3">
+                                  {level2.children.map(level3 => {
+                                    const level3Key = `${level2Key}::${level3.level3}`
+                                    const level3Open = expandedLevel3[level3Key] ?? false
+                                    const singleKnowledgeNote = level3.notes.length === 1 ? level3.notes[0] : null
+                                    return (
+                                      <div key={level3Key} className="rounded-2xl border border-gray-200 bg-white p-3">
+                                        <div className="flex items-center justify-between gap-3">
+                                          <button
+                                            type="button"
+                                            onClick={() => setExpandedLevel3(prev => ({ ...prev, [level3Key]: !level3Open }))}
+                                            className="flex min-w-0 flex-1 items-center justify-between text-left"
+                                          >
+                                            <div>
+                                              <p className="text-sm font-medium text-gray-700">{level3.level3}</p>
+                                              <p className="text-xs text-gray-400 mt-1">
+                                                {singleKnowledgeNote ? '1 篇 Markdown 笔记' : `${level3.count} 个知识点`}
+                                              </p>
+                                            </div>
+                                            <span className="text-gray-300">{level3Open ? '−' : '+'}</span>
+                                          </button>
+                                          {singleKnowledgeNote && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              startInlineEdit(singleKnowledgeNote)
+                                              }}
+                                              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-600"
+                                            >
+                                              编辑 Markdown
+                                            </button>
+                                          )}
+                                        </div>
+                                        {level3Open && (
+                                          <div className="mt-3 space-y-3">
+                                            {level3.notes.map(n => {
+                                              const relatedInsights = findRelatedInsights(n, insights)
+                                              const linkedCount = normalizeText(n.sourceErrorIds).split(',').filter(Boolean).length
+                                              const displayBody = buildDisplayNoteBody(n.content)
+                                              return (
+                                                <div key={n.id} className="rounded-2xl border border-gray-100 bg-gray-50 p-4">
+                                                  <div className="mb-3 flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                      <p className="text-base font-semibold text-gray-900">{n.title}</p>
+                                                      <p className="mt-1 text-xs text-gray-400">{buildKnowledgePath(n)}</p>
+                                                    </div>
+                                                    <div className="flex shrink-0 gap-2">
+                                                      <button onClick={() => startInlineEdit(n)} className="text-xs text-blue-500">编辑</button>
+                                                      <button onClick={() => deleteNote(n.id)} className="text-xs text-red-400">删除</button>
+                                                    </div>
+                                                  </div>
+
+                                                  {inlineEditId === n.id ? (
+                                                    <div className="rounded-xl bg-white p-4">
+                                                      <div className="mb-3 flex items-center justify-between">
+                                                        <div className="flex gap-2">
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => setInlinePreview(false)}
+                                                            className={`rounded-lg px-3 py-1 text-xs ${!inlinePreview ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'}`}
+                                                          >
+                                                            编辑
+                                                          </button>
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => setInlinePreview(true)}
+                                                            className={`rounded-lg px-3 py-1 text-xs ${inlinePreview ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'}`}
+                                                          >
+                                                            预览
+                                                          </button>
+                                                        </div>
+                                                        <span className="text-xs text-gray-400">可直接粘贴图片</span>
+                                                      </div>
+
+                                                      {inlinePreview ? (
+                                                        <div className="space-y-1">{renderSimpleMarkdown(inlineDraftContent)}</div>
+                                                      ) : (
+                                                        <textarea
+                                                          value={inlineDraftContent}
+                                                          onChange={e => setInlineDraftContent(e.target.value)}
+                                                          onPaste={handleInlinePaste}
+                                                          rows={10}
+                                                          placeholder="直接写知识点正文，支持 Markdown、图片粘贴、简单图表截图。"
+                                                          className="w-full resize-none rounded-xl border border-gray-200 px-3 py-3 text-sm leading-7 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                                                        />
+                                                      )}
+
+                                                      <div className="mt-3 flex gap-2">
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => saveInlineEdit(n)}
+                                                          disabled={inlineSaving}
+                                                          className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-medium text-white disabled:opacity-60"
+                                                        >
+                                                          {inlineSaving ? '保存中...' : '保存正文'}
+                                                        </button>
+                                                        <button
+                                                          type="button"
+                                                          onClick={cancelInlineEdit}
+                                                          className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-xs font-medium text-gray-600"
+                                                        >
+                                                          取消
+                                                        </button>
+                                                      </div>
+                                                    </div>
+                                                  ) : displayBody ? (
+                                                    <div className="rounded-xl bg-white p-4">
+                                                      <div className="space-y-1">{renderSimpleMarkdown(displayBody)}</div>
+                                                    </div>
+                                                  ) : (
+                                                    <div className="rounded-xl bg-white p-4 text-sm text-gray-400">
+                                                      这篇知识点还没有正文，先点“编辑 Markdown”补充内容。
+                                                    </div>
+                                                  )}
+
+                                                  {linkedCount > 0 && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => openLinkedErrors(n)}
+                                                      className="mt-3 w-full rounded-xl bg-amber-50 p-3 text-left text-sm text-amber-700"
+                                                    >
+                                                      关联错题 {linkedCount} 道，点击查看
+                                                    </button>
+                                                  )}
+
+                                                  {relatedInsights.length > 0 && (
+                                                    <div className="mt-3 rounded-xl bg-purple-50 p-3">
+                                                      <p className="mb-2 text-xs font-medium text-purple-600">规则摘要 {relatedInsights.length} 条</p>
+                                                      <div className="space-y-2">
+                                                        {relatedInsights.slice(0, 2).map(ins => (
+                                                          <div key={ins.id} className="rounded-lg bg-white/70 px-3 py-2 text-xs text-purple-800">
+                                                            <div className="mb-1 flex items-center gap-2">
+                                                              <span className={`rounded-full px-2 py-0.5 ${INSIGHT_TYPES.find(t => t.value === ins.insightType)?.color ?? 'bg-gray-100 text-gray-500'}`}>
+                                                                {INSIGHT_TYPES.find(t => t.value === ins.insightType)?.label ?? '规则摘要'}
+                                                              </span>
+                                                              <span className="text-[11px] text-purple-500">{buildInsightSourceLabel(ins)}</span>
+                                                            </div>
+                                                            <div>{ins.finalContent}</div>
+                                                          </div>
+                                                        ))}
+                                                      </div>
+                                                    </div>
+                                                  )}
+
+                                                  <div className="mt-3 flex gap-2">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => router.push(buildPracticeSearchLink(n))}
+                                                      className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700"
+                                                    >
+                                                      去练这类题
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => startInlineEdit(n)}
+                                                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-600"
+                                                    >
+                                                      编辑 Markdown
+                                                    </button>
+                                                  </div>
+
+                                                  <div className="mt-2 flex items-center justify-between gap-3 text-xs text-gray-300">
+                                                    <p>{format(new Date(n.updatedAt), 'MM-dd HH:mm')}</p>
+                                                    <p>{n.isPrivate ? '仅自己可见' : '知识点笔记'}</p>
+                                                  </div>
+                                                </div>
+                                              )
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
-                  <p className="text-sm text-gray-800 font-medium">{ins.finalContent}</p>
-                  {ins.aiDraft && ins.aiDraft !== ins.finalContent && (
-                    <p className="text-xs text-gray-400 mt-1 line-clamp-1">AI草稿：{ins.aiDraft}</p>
-                  )}
-                  <div className="mt-2 flex items-center justify-between gap-3 text-xs text-gray-300">
-                    <p>{format(new Date(ins.updatedAt), 'MM-dd HH:mm')}</p>
-                    <p>{ins.timesApplied ? `已应用 ${ins.timesApplied} 次` : '等待在练习中验证'}</p>
-                  </div>
-                  {(normalizeText(ins.sourceErrorIds) || normalizeText(ins.domainExamples)) && (
-                    <div className="mt-2 rounded-xl bg-gray-50 p-3 text-xs text-gray-500 space-y-1">
-                      {normalizeText(ins.sourceErrorIds) && (
-                        <p className="line-clamp-1">来源题目：{ins.sourceErrorIds}</p>
-                      )}
-                      {normalizeText(ins.domainExamples) && (
-                        <p className="line-clamp-1">典型例子：{ins.domainExamples}</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )
+                )
+              })}
+            </div>
+          )}
+
+          {insightsError && (
+            <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
+              历史规则摘要加载失败，不影响知识树主流程。你仍可继续整理知识点和查看关联错题。
+            </div>
+          )}
+        </>
       )}
 
       {showForm && (
-        <NoteInsightForm
-          tab={tab}
+        <KnowledgeForm
           editItem={editItem}
           draftItem={draftItem}
           onClose={() => { setShowForm(false); setEditItem(null); setDraftItem(null); loadData() }}
           onSaved={(text, type) => setMessage({ text, type })}
         />
       )}
+
+      {linkedErrors && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center">
+          <div className="w-full max-w-lg rounded-t-3xl bg-white p-6 sm:rounded-2xl max-h-[90vh] overflow-y-auto">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">{linkedErrorsTitle}</h3>
+                <p className="text-xs text-gray-400 mt-1">这篇知识点笔记下关联的错题</p>
+              </div>
+              <button onClick={() => { setLinkedErrors(null); setLinkedErrorIndex(0) }} className="text-2xl text-gray-400">×</button>
+            </div>
+            {linkedErrors.length > 0 && (
+              <div className="mb-3 flex items-center justify-between text-xs text-gray-400">
+                <span>第 {linkedErrorIndex + 1} 题 / 共 {linkedErrors.length} 题</span>
+                {linkedErrors.length > 1 && (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={linkedErrorIndex === 0}
+                      onClick={() => setLinkedErrorIndex(index => Math.max(0, index - 1))}
+                      className="rounded-lg border border-gray-200 px-3 py-1 text-gray-600 disabled:opacity-30"
+                    >
+                      上一题
+                    </button>
+                    <button
+                      type="button"
+                      disabled={linkedErrorIndex >= linkedErrors.length - 1}
+                      onClick={() => setLinkedErrorIndex(index => Math.min(linkedErrors.length - 1, index + 1))}
+                      className="rounded-lg border border-gray-200 px-3 py-1 text-gray-600 disabled:opacity-30"
+                    >
+                      下一题
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="space-y-3">
+              {linkedErrors.length > 0 && (() => {
+                const item = linkedErrors[linkedErrorIndex]
+                return (
+                <div key={item.id} className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="rounded-lg bg-gray-100 px-2 py-0.5 text-xs text-gray-500">{item.question.type}</span>
+                    {item.question.subtype && (
+                      <span className="rounded-lg bg-blue-50 px-2 py-0.5 text-xs text-blue-600">{item.question.subtype}</span>
+                    )}
+                    <span className="text-xs text-gray-400">掌握度 {item.masteryPercent}%</span>
+                  </div>
+                  {item.question.questionImage && (
+                    <img
+                      src={item.question.questionImage}
+                      alt="错题图片"
+                      className="mb-3 w-full rounded-xl border border-gray-100 object-contain"
+                    />
+                  )}
+                  <p className="text-sm text-gray-700 whitespace-pre-wrap">{item.question.content}</p>
+                  {parseOptions(item.question.options).length > 0 && (
+                    <div className="mt-3 space-y-2 rounded-xl bg-gray-50 p-3">
+                      {parseOptions(item.question.options).map((option: string, idx: number) => (
+                        <div key={`${item.id}-${idx}`} className="text-sm text-gray-600 whitespace-pre-wrap">
+                          {option}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-3 flex items-center justify-between gap-3">
+                    <p className="text-xs text-green-700">正确答案：{item.question.answer}</p>
+                    <button
+                      type="button"
+                      onClick={() => router.push(`/errors?ids=${encodeURIComponent(item.id)}`)}
+                      className="text-xs text-blue-600 underline"
+                    >
+                      去错题本查看
+                    </button>
+                  </div>
+                </div>
+                )
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function NoteInsightForm({ tab, editItem, draftItem, onClose, onSaved }: { tab: Tab; editItem: any; draftItem: any; onClose: () => void; onSaved: (text: string, type: 'ok' | 'err') => void }) {
-  const [type, setType]     = useState<Tab>(tab)
+function KnowledgeForm({
+  editItem,
+  draftItem,
+  onClose,
+  onSaved,
+}: {
+  editItem: any
+  draftItem: any
+  onClose: () => void
+  onSaved: (text: string, type: 'ok' | 'err') => void
+}) {
   const [saving, setSaving] = useState(false)
-  const [form, setForm]     = useState({
-    // Note fields
+  const [form, setForm] = useState({
     noteType: editItem?.type ?? draftItem?.type ?? '判断推理',
     noteSubtype: normalizeText(editItem?.subtype) || normalizeText(draftItem?.subtype) || '通用',
-    title:    editItem?.title ?? draftItem?.title ?? '',
-    content:  editItem?.content ?? draftItem?.content ?? '',
+    module2: normalizeText(editItem?.module2) || normalizeText(draftItem?.module2) || '',
+    module3: normalizeText(editItem?.module3) || normalizeText(draftItem?.module3) || '',
+    sourceErrorIds: normalizeText(editItem?.sourceErrorIds) || normalizeText(draftItem?.sourceErrorIds) || '',
+    title: editItem?.title ?? draftItem?.title ?? '',
+    content: editItem?.content ?? draftItem?.content ?? '',
     isPrivate: editItem?.isPrivate ?? draftItem?.isPrivate ?? false,
-    // Insight fields
-    skillTag:     editItem?.skillTag ?? draftItem?.skillTag ?? '判断推理',
-    insightType:  editItem?.insightType ?? draftItem?.insightType ?? 'rule',
-    finalContent: editItem?.finalContent ?? draftItem?.finalContent ?? '',
-    aiDraft:      editItem?.aiDraft ?? draftItem?.aiDraft ?? '',
-    sourceErrorIds: normalizeText(editItem?.sourceErrorIds) || normalizeText(draftItem?.sourceErrorIds),
-    domainExamples: normalizeText(editItem?.domainExamples) || normalizeText(draftItem?.domainExamples),
   })
 
   async function handleSave() {
     setSaving(true)
-    if (type === 'notes') {
-      const method = editItem ? 'PATCH' : 'POST'
-      const body   = editItem
-        ? { id: editItem.id, title: form.title, content: form.content, subtype: form.noteSubtype, isPrivate: form.isPrivate }
-        : { type: form.noteType, title: form.title, content: form.content, subtype: form.noteSubtype, isPrivate: form.isPrivate }
-      const res = await fetch('/api/notes', { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        onSaved(data.error ?? '保存失败', 'err')
-        setSaving(false)
-        return
-      }
+    const method = editItem ? 'PATCH' : 'POST'
+    const body = editItem
+      ? {
+          id: editItem.id,
+          title: form.title,
+          content: form.content,
+          subtype: form.noteSubtype,
+          module2: form.module2,
+          module3: form.module3,
+          sourceErrorIds: form.sourceErrorIds,
+          isPrivate: form.isPrivate,
+        }
+      : {
+          type: form.noteType,
+          title: form.title,
+          content: form.content,
+          subtype: form.noteSubtype,
+          module2: form.module2,
+          module3: form.module3,
+          sourceErrorIds: form.sourceErrorIds,
+          isPrivate: form.isPrivate,
+        }
+
+    const res = await fetch('/api/notes', {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+    if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      if (data?.deduped) {
-        setSaving(false)
-        onSaved('已存在同知识点笔记，未重复创建', 'ok')
-        onClose()
-        return
-      }
-    } else {
-      const method = editItem ? 'PATCH' : 'POST'
-      const body   = editItem
-        ? { id: editItem.id, skillTag: form.skillTag, insightType: form.insightType, finalContent: form.finalContent, aiDraft: form.aiDraft, sourceErrorIds: form.sourceErrorIds, domainExamples: form.domainExamples }
-        : { skillTag: form.skillTag, insightType: form.insightType, finalContent: form.finalContent, aiDraft: form.aiDraft, sourceErrorIds: form.sourceErrorIds, domainExamples: form.domainExamples }
-      const res = await fetch('/api/insights', { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        onSaved(data.error ?? '保存失败', 'err')
-        setSaving(false)
-        return
-      }
-      const data = await res.json().catch(() => ({}))
-      if (data?.deduped) {
-        setSaving(false)
-        onSaved('已存在同知识点规律，未重复创建', 'ok')
-        onClose()
-        return
-      }
+      onSaved(data.error ?? '保存失败', 'err')
+      setSaving(false)
+      return
     }
-    setSaving(false)
+
+    const data = await res.json().catch(() => ({}))
+    if (data?.deduped) {
+      onSaved('已存在同知识点，未重复创建', 'ok')
+      setSaving(false)
+      onClose()
+      return
+    }
+
     onSaved(editItem ? '更新成功' : '保存成功', 'ok')
+    setSaving(false)
     onClose()
   }
 
@@ -436,97 +880,101 @@ function NoteInsightForm({ tab, editItem, draftItem, onClose, onSaved }: { tab: 
     <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50">
       <div className="bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-bold text-lg text-gray-900">{editItem ? '编辑' : '新增'}</h3>
+          <h3 className="font-bold text-lg text-gray-900">{editItem ? '编辑知识点 Markdown' : '新增知识点 Markdown'}</h3>
           <button onClick={onClose} className="text-gray-400 text-2xl">×</button>
         </div>
 
-        {!editItem && (
-          <div className="flex gap-2 mb-4">
-            {[{ key: 'notes', label: '笔记' }, { key: 'insights', label: '规律' }].map(t => (
-              <button key={t.key} onClick={() => setType(t.key as Tab)}
-                className={`flex-1 py-2 rounded-xl text-sm font-medium border
-                  ${type === t.key ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200'}`}>
-                {t.label}
-              </button>
-            ))}
-          </div>
-        )}
-
         <div className="space-y-3">
-          {type === 'notes' ? (<>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">题型</label>
-                <select value={form.noteType} onChange={e => setForm(f => ({ ...f, noteType: e.target.value }))}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
-                  {QUESTION_TYPES.map(t => <option key={t}>{t}</option>)}
-                </select>
-              </div>
-              <div className="flex items-end pb-1">
-                <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-                  <input type="checkbox" checked={form.isPrivate} onChange={e => setForm(f => ({ ...f, isPrivate: e.target.checked }))} />
-                  🔒 私有
-                </label>
-              </div>
-            </div>
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">来源</label>
-              <select value={form.noteSubtype} onChange={e => setForm(f => ({ ...f, noteSubtype: e.target.value }))}
-                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
-                {NOTE_SOURCE_OPTIONS.map(t => <option key={t}>{t}</option>)}
+              <label className="block text-xs font-medium text-gray-500 mb-1">一级模块</label>
+              <select
+                value={form.noteType}
+                onChange={e => setForm(f => ({ ...f, noteType: e.target.value }))}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              >
+                {QUESTION_TYPES.map(t => <option key={t}>{t}</option>)}
               </select>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">标题</label>
-              <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                <input type="checkbox" checked={form.isPrivate} onChange={e => setForm(f => ({ ...f, isPrivate: e.target.checked }))} />
+                🔒 私有
+              </label>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">内容（支持 Markdown）</label>
-              <textarea value={form.content} onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
-                rows={5} className="w-full px-3 py-3 border border-gray-200 rounded-xl text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-400" />
-            </div>
-          </>) : (<>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">考点</label>
-                <input value={form.skillTag} onChange={e => setForm(f => ({ ...f, skillTag: e.target.value }))}
-                  placeholder="如：翻译推理"
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">类型</label>
-                <select value={form.insightType} onChange={e => setForm(f => ({ ...f, insightType: e.target.value }))}
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
-                  {INSIGHT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">来源题目 / 错题ID</label>
-              <input value={form.sourceErrorIds} onChange={e => setForm(f => ({ ...f, sourceErrorIds: e.target.value }))}
-                placeholder="如：q1,q2,q3"
-                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">典型例子</label>
-              <textarea value={form.domainExamples} onChange={e => setForm(f => ({ ...f, domainExamples: e.target.value }))}
-                rows={3} placeholder="补一两个能代表这条规律的题目特征"
-                className="w-full px-3 py-3 border border-gray-200 rounded-xl text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-400" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">规律内容（人工确认版）</label>
-              <textarea value={form.finalContent} onChange={e => setForm(f => ({ ...f, finalContent: e.target.value }))}
-                rows={4} placeholder="用自己的话写下这个规律，如：看到'如果...则...'就翻译为充分条件"
-                className="w-full px-3 py-3 border border-gray-200 rounded-xl text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-400" />
-            </div>
-          </>)}
-        </div>
+          </div>
 
-        <div className="flex gap-3 mt-4">
-          <button onClick={onClose} className="flex-1 py-3 border border-gray-200 text-gray-600 rounded-2xl font-medium">取消</button>
-          <button onClick={handleSave} disabled={saving} className="flex-1 py-3 bg-blue-600 text-white rounded-2xl font-bold disabled:opacity-50">
-            {saving ? '保存中...' : '保存'}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">来源</label>
+            <select
+              value={form.noteSubtype}
+              onChange={e => setForm(f => ({ ...f, noteSubtype: e.target.value }))}
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            >
+              {NOTE_SOURCE_OPTIONS.map(t => <option key={t}>{t}</option>)}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">二级模块</label>
+              <input
+                value={form.module2}
+                onChange={e => setForm(f => ({ ...f, module2: e.target.value }))}
+                placeholder="如：图形推理"
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">三级模块</label>
+              <input
+                value={form.module3}
+                onChange={e => setForm(f => ({ ...f, module3: e.target.value }))}
+                placeholder="如：立体截面"
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">具体知识点</label>
+            <input
+              value={form.title}
+              onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">关联错题 / 题号</label>
+            <input
+              value={form.sourceErrorIds}
+              onChange={e => setForm(f => ({ ...f, sourceErrorIds: e.target.value }))}
+              placeholder="如：cmmx...001, cmmx...002"
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">知识点正文（支持 Markdown）</label>
+            <textarea
+              value={form.content}
+              onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
+              rows={6}
+              className="w-full px-3 py-3 border border-gray-200 rounded-xl text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+
+          <p className="text-xs text-gray-400">
+            一个知识点对应一篇 Markdown 笔记，下面再挂关联错题和补充规则摘要。
+          </p>
+
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-medium disabled:opacity-60"
+          >
+            {saving ? '保存中...' : '保存知识点'}
           </button>
         </div>
       </div>

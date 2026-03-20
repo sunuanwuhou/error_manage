@@ -33,6 +33,7 @@ interface QueueItem {
     answer:   string
     type:     string
     subtype?: string
+    sub2?: string
     analysis?: string
     sharedAiAnalysis?: string
     skillTags?: string
@@ -59,6 +60,12 @@ interface PaperAnswerState {
   selected: string
   submitResult: SubmitResult | null
   timeSpentSeconds: number
+}
+
+interface RegularAnswerState {
+  selected: string
+  submitResult: SubmitResult | null
+  customAnalysis?: string
 }
 
 interface PaperSessionRecord {
@@ -88,16 +95,31 @@ function parseOptions(raw: string | undefined): string[] {
 
 function formatQuestionContent(content: string, hasImage: boolean) {
   if (!content) return ''
-  const next = hasImage ? content.replace(/\[图\]/g, '').trim() : content
-  return next || (hasImage ? '请结合上方图片作答。' : content)
+  const next = hasImage
+    ? content.replace(/(\[图\]|@t\d+)/gi, '').trim()
+    : content.replace(/@t\d+/gi, '[图]')
+  const fixed = next.replace(
+    /每个办事窗口办理每笔业务的用时缩短到以前的$/g,
+    '每个办事窗口办理每笔业务的用时缩短到以前的2/3'
+  ).replace(
+    /每个办事窗口办理每笔业务的用时缩短到以前的\[图\]/gi,
+    '每个办事窗口办理每笔业务的用时缩短到以前的2/3'
+  )
+  return fixed || (hasImage ? '请结合上方图片作答。' : content)
 }
 
 function formatOptionLabel(option: string, hasQuestionImage: boolean) {
   if (!option) return ''
   const normalized = option
     .replace(/^([A-D])\.\1$/, '$1.见图')
+    .replace(/@t\d+/gi, hasQuestionImage ? '见图' : '[图]')
     .replace(/\[图[A-D]?\]/g, hasQuestionImage ? '见图' : '[图]')
   return normalized
+}
+
+function getMediaLabel(questionType: string, hasImage: boolean) {
+  if (!hasImage) return ''
+  return questionType === '资料分析' ? '资料 / 材料图' : '题目图片'
 }
 
 function getResultLabel(matrix: string) {
@@ -107,6 +129,44 @@ function getResultLabel(matrix: string) {
 function formatAvgSeconds(totalSeconds: number, answeredCount: number) {
   if (!answeredCount) return '0:00'
   return formatTime(Math.round(totalSeconds / answeredCount))
+}
+
+function buildQuestionReviewNoteDraft(item: QueueItem, analysis: string) {
+  const params = new URLSearchParams({
+    draft: '1',
+    draftKind: 'notes',
+    draftType: item.question.type || '判断推理',
+    draftSubtype: '错题复盘',
+    draftModule2: item.question.subtype || '',
+    draftModule3: '',
+    draftTitle: `${item.question.type}${item.question.subtype ? ` · ${item.question.subtype}` : ''} 复盘`,
+    draftContent: [
+      `题目：${item.question.content}`.slice(0, 180),
+      analysis ? `我的误区：${analysis}` : '',
+      item.aiActionRule ? `下次提醒：${item.aiActionRule}` : '',
+    ].filter(Boolean).join('\n\n'),
+    draftSourceErrorIds: item.userErrorId ?? '',
+  })
+  return `/notes?${params.toString()}`
+}
+
+function buildQuestionInsightDraft(item: QueueItem, analysis: string) {
+  const params = new URLSearchParams({
+    draft: '1',
+    draftKind: 'notes',
+    draftType: item.question.type || '判断推理',
+    draftSubtype: '规则沉淀',
+    draftModule2: item.question.subtype || '',
+    draftModule3: item.question.sub2 || '',
+    draftTitle: item.question.sub2 || item.question.subtype || item.question.type || '通用规则',
+    draftContent: [
+      item.aiActionRule ? `规则摘要：${item.aiActionRule}` : '',
+      analysis ? `AI 草稿：${analysis}` : '',
+      `典型例子：${item.question.content.slice(0, 120)}`,
+    ].filter(Boolean).join('\n\n'),
+    draftSourceErrorIds: item.userErrorId ?? '',
+  })
+  return `/notes?${params.toString()}`
 }
 
 function normalizePaperAnswers(answers: Record<string, PaperAnswerState>) {
@@ -160,11 +220,16 @@ export default function PracticePage() {
   const [paperMarked, setPaperMarked] = useState<Set<number>>(new Set())
   const [paperAnswers, setPaperAnswers] = useState<Record<number, PaperAnswerState>>({})
   const [paperCardCollapsed, setPaperCardCollapsed] = useState(false)
+  const [regularAnswers, setRegularAnswers] = useState<Record<number, RegularAnswerState>>({})
+  const [regularCardCollapsed, setRegularCardCollapsed] = useState(true)
   const [paperLoading, setPaperLoading] = useState(false)
   const [idx, setIdx]           = useState(0)
   const [loading, setLoading]   = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   const [thinking, setThinking] = useState('')
+  const [thinkingSketch, setThinkingSketch] = useState('')
+  const [showSketchPad, setShowSketchPad] = useState(false)
+  const [previewImage, setPreviewImage] = useState<string | null>(null)
   const [verifying, setVerifying] = useState(false)
   const [verdict, setVerdict]   = useState<ThinkingVerdict | null>(null)
   const [verdictFeedback, setVerdictFeedback] = useState('')
@@ -172,6 +237,7 @@ export default function PracticePage() {
   const [sessionStats, setSessionStats] = useState({ done: 0, stockifiedNow: 0 })
   const [diagnosing, setDiagnosing] = useState(false)
   const [customAnalysis, setCustomAnalysis] = useState('')
+  const [aiNotice, setAiNotice] = useState('')
   const [loadError, setLoadError] = useState('')
   const [submitError, setSubmitError] = useState('')
   const sessionStartRef = useRef<string>(new Date().toISOString())
@@ -223,6 +289,20 @@ export default function PracticePage() {
         : averageSecondsPerAnswered <= 90
           ? '节奏正常'
           : '节奏偏慢'
+  const regularAnsweredIndexes = Object.keys(regularAnswers).map(Number).sort((a, b) => a - b)
+  const regularAnsweredCount = regularAnsweredIndexes.length
+  const regularProgressPercent = queue.length > 0 ? Math.round((regularAnsweredCount / queue.length) * 100) : 0
+  const regularUnansweredIndexes = queue
+    .map((_, questionIndex) => questionIndex)
+    .filter(questionIndex => !(questionIndex in regularAnswers))
+  const regularUnansweredCount = Math.max(0, queue.length - regularAnsweredCount)
+  const nextRegularUnansweredIndex = regularUnansweredIndexes.find(questionIndex => questionIndex > idx) ?? regularUnansweredIndexes[0] ?? null
+  const currentRegularAnswered = idx in regularAnswers
+  const deepThinkingPrompts = [
+    '我误判的依据是…',
+    '正确突破口应该先看…',
+    '下次我先验证…',
+  ]
 
   function togglePaperMarked(questionIndex: number) {
     setPaperMarked(prev => {
@@ -267,13 +347,19 @@ export default function PracticePage() {
       setPaperAnswered(new Set())
       setPaperMarked(new Set())
       setPaperAnswers({})
+      setRegularAnswers({})
+      setRegularCardCollapsed(true)
       setSelected(null)
       setSubmitResult(null)
       setSubmitError('')
       setThinking('')
+      setThinkingSketch('')
+      setShowSketchPad(false)
+      setPreviewImage(null)
       setVerdict(null)
       setVerdictFeedback('')
       setCustomAnalysis('')
+      setAiNotice('')
       Promise.all([
         fetch(`/api/papers?paper=${encodeURIComponent(paper)}`),
         fetch(`/api/paper-sessions?paper=${encodeURIComponent(paper)}`),
@@ -315,14 +401,20 @@ export default function PracticePage() {
     setPaperAnswered(new Set())
     setPaperMarked(new Set())
     setPaperAnswers({})
+    setRegularAnswers({})
+    setRegularCardCollapsed(true)
     setPaperLoading(false)
     setSelected(null)
     setThinking('')
+    setThinkingSketch('')
+    setShowSketchPad(false)
+    setPreviewImage(null)
     setVerdict(null)
     setVerdictFeedback('')
     setSubmitResult(null)
     setSubmitError('')
     setCustomAnalysis('')
+    setAiNotice('')
     setLoadError('')
     fetch('/api/daily-tasks')
       .then(async r => {
@@ -364,8 +456,11 @@ export default function PracticePage() {
     setIdx(nextIdx)
     const answeredState = normalizedAnswers[nextIdx]
     setSelected(answeredState?.selected ?? null)
-    setThinking('')
-    setVerdict(null)
+      setThinking('')
+      setThinkingSketch('')
+      setShowSketchPad(false)
+      setPreviewImage(null)
+      setVerdict(null)
     setCustomAnalysis('')
     setVerdictFeedback('')
     setSubmitError('')
@@ -428,7 +523,7 @@ export default function PracticePage() {
 
       if (event.key === 'ArrowLeft') {
         event.preventDefault()
-        if (step === 'paper_submit') {
+        if (paper && step === 'paper_submit') {
           setStep('answering')
           return
         }
@@ -438,11 +533,12 @@ export default function PracticePage() {
 
       if (event.key === 'ArrowRight') {
         event.preventDefault()
-        if (step === 'paper_submit') {
+        if (paper && step === 'paper_submit') {
           setStep('answering')
           return
         }
-        handlePaperJumpNext()
+        if (paper) handlePaperJumpNext()
+        else if (idx < queue.length - 1) resetQuestionView(idx + 1)
         return
       }
 
@@ -602,7 +698,8 @@ export default function PracticePage() {
         thinkingVerdict:  tv,
         thinkingFeedback: verdictFeedback,
         userThinkingText: thinking,
-        thinkingInputType: mode === 'deep' ? 'text' : null,
+        userThinkingImage: thinkingSketch || undefined,
+        thinkingInputType: mode === 'deep' ? (thinkingSketch ? 'sketch' : 'text') : null,
         practiceMode:     mode,
         selectedAnswer:   sel,
         sessionId:        sessionStartRef.current,
@@ -625,10 +722,10 @@ export default function PracticePage() {
       const result: SubmitResult & { error?: string } = await res.json()
       if (!res.ok) throw new Error(result.error ?? '提交失败，请稍后重试')
         setSubmitResult(result)
-        if (paper) {
-          const nextPaperAnswers = {
-            ...paperAnswers,
-            [idx]: {
+      if (paper) {
+        const nextPaperAnswers = {
+          ...paperAnswers,
+          [idx]: {
               selected: sel,
               submitResult: result,
               timeSpentSeconds: timeSpent,
@@ -676,6 +773,15 @@ export default function PracticePage() {
               })
               .catch(() => {})
           }
+      } else {
+        setRegularAnswers(prev => ({
+          ...prev,
+          [idx]: {
+            selected: sel,
+            submitResult: result,
+            customAnalysis: prev[idx]?.customAnalysis,
+          },
+        }))
       }
       setSessionStats(s => ({
         done:          s.done + 1,
@@ -696,11 +802,12 @@ export default function PracticePage() {
 
   function resetQuestionView(nextIndex: number) {
     setIdx(nextIndex)
-    const answeredState = paper ? paperAnswers[nextIndex] : undefined
+    const answeredState = paper ? paperAnswers[nextIndex] : regularAnswers[nextIndex]
     setSelected(answeredState?.selected ?? null)
     setThinking('')
     setVerdict(null)
-    setCustomAnalysis('')
+    setCustomAnalysis(!paper && answeredState && 'customAnalysis' in answeredState ? answeredState.customAnalysis ?? '' : '')
+    setAiNotice('')
     setVerdictFeedback('')
     setSubmitError('')
     setSubmitResult(answeredState?.submitResult ?? null)
@@ -1134,7 +1241,7 @@ export default function PracticePage() {
     ''
 
   return (
-      <div data-testid="paper-practice-page" className="max-w-lg mx-auto px-4 pt-4 pb-24">
+      <div data-testid="paper-practice-page" className="max-w-lg mx-auto px-4 pt-4 pb-24 lg:pb-8">
       {/* 进度条 + O2: 计时器 */}
       <div className="flex items-center gap-3 mb-4">
         <button onClick={() => {
@@ -1349,24 +1456,127 @@ export default function PracticePage() {
           )}
         </div>
       ) : (
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-lg">
-            {current.question.type}{current.question.subtype ? ` · ${current.question.subtype}` : ''}
-          </span>
-          <StateBadge state={state} masteryPercent={current.masteryPercent} isHot={current.isHot} />
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-blue-500">今日练习</p>
+              <p className="text-sm font-semibold text-gray-900">第 {idx + 1} 题 / 共 {queue.length} 题</p>
+              <p className="text-xs text-gray-400 mt-1">深度和快速模式都支持跳题、回题和先跳过。</p>
+            </div>
+            <div className="rounded-2xl bg-blue-50 px-3 py-2 text-center flex-shrink-0">
+              <p className="text-lg font-bold text-blue-700">{regularProgressPercent}%</p>
+              <p className="text-xs text-blue-400">完成率</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            <div className="rounded-xl bg-gray-50 px-3 py-2 text-center">
+              <p className="text-sm font-bold text-green-600">{regularAnsweredCount}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">已做</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2 text-center">
+              <p className="text-sm font-bold text-amber-600">{regularUnansweredCount}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">未做</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2 text-center">
+              <p className="text-sm font-bold text-gray-900">{mode === 'deep' ? '深度' : '快速'}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">当前模式</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-lg">
+              {current.question.type}{current.question.subtype ? ` · ${current.question.subtype}` : ''}
+            </span>
+            <StateBadge state={state} masteryPercent={current.masteryPercent} isHot={current.isHot} />
+            {nextRegularUnansweredIndex != null && nextRegularUnansweredIndex !== idx && (
+              <button
+                type="button"
+                onClick={() => resetQuestionView(nextRegularUnansweredIndex)}
+                className="text-xs px-2 py-1 rounded-lg border bg-white border-amber-200 text-amber-700"
+              >
+                下一道未做
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-gray-500">练习题卡</p>
+              <button
+                type="button"
+                onClick={() => setRegularCardCollapsed(value => !value)}
+                className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-[11px] text-gray-500"
+              >
+                {regularCardCollapsed ? '展开题卡' : '收起题卡'}
+              </button>
+            </div>
+            {!regularCardCollapsed && (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  {queue.map((item, questionIndex) => {
+                    const isCurrent = questionIndex === idx
+                    const isAnswered = questionIndex in regularAnswers
+                    return (
+                      <button
+                        key={`${item.questionId}-${questionIndex}`}
+                        type="button"
+                        onClick={() => resetQuestionView(questionIndex)}
+                        className={`min-w-[40px] h-10 rounded-xl text-sm font-medium border transition-colors ${
+                          isCurrent
+                            ? 'bg-blue-600 border-blue-600 text-white'
+                            : isAnswered
+                              ? 'bg-green-50 border-green-200 text-green-700'
+                              : 'bg-gray-50 border-gray-200 text-gray-400'
+                        }`}
+                      >
+                        {questionIndex + 1}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="flex flex-wrap gap-3 mt-3 text-[11px] text-gray-500">
+                  <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-600" /> 当前题</span>
+                  <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-green-500" /> 已做</span>
+                  <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-gray-300" /> 未做</span>
+                  <span className="inline-flex items-center gap-1">快捷键 `← →`</span>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 
       {/* 题目 */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4 lg:p-6">
         {current.question.questionImage && (
-          <img
-            src={current.question.questionImage}
-            alt="题目图片"
-            className="mb-4 w-full rounded-2xl border border-gray-100"
-          />
+          <div className="mb-4 overflow-hidden rounded-2xl border border-blue-100 bg-blue-50 lg:mb-5">
+            <button
+              type="button"
+              onClick={() => setPreviewImage(current.question.questionImage ?? null)}
+              className="block w-full text-left"
+            >
+              <div className="flex items-center justify-between gap-3 px-3 py-2">
+                <div>
+                  <p className="text-xs font-medium text-blue-600">{getMediaLabel(current.question.type, true)}</p>
+                  <p className="text-[11px] text-blue-400 mt-0.5">点击放大查看，适合资料分析、图题和多图题。</p>
+                </div>
+                <span className="rounded-full bg-white px-2.5 py-1 text-[11px] text-blue-600 shadow-sm">放大查看</span>
+              </div>
+              <img
+                src={current.question.questionImage}
+                alt="题目图片"
+                className="w-full border-t border-blue-100 object-contain bg-white lg:max-h-[560px]"
+              />
+            </button>
+          </div>
         )}
-        <p data-testid="paper-question-content" className="text-base text-gray-900 leading-relaxed whitespace-pre-wrap">{displayQuestionContent}</p>
+        {current.question.type === '资料分析' && (
+          <div className="mb-3 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            先看材料图，再看题干。资料分析题建议先扫表头、单位、时间口径和变化方向。
+          </div>
+        )}
+        <p data-testid="paper-question-content" className="whitespace-pre-wrap text-base leading-relaxed text-gray-900 lg:text-lg lg:leading-8">{displayQuestionContent}</p>
       </div>
 
       {submitError && (
@@ -1391,14 +1601,14 @@ export default function PracticePage() {
 
       {/* 选项（答题中） */}
       {(step === 'answering' || step === 'thinking') && (
-        <div className="space-y-2 mb-4">
+        <div className="mb-4 space-y-2 lg:space-y-3">
           {options.map(opt => {
             const letter = opt.charAt(0)
             const isSel  = selected === letter
             const displayOpt = formatOptionLabel(opt, Boolean(current.question.questionImage))
             return (
               <button key={opt} data-testid="paper-option" onClick={() => handleSelect(opt)} disabled={step === 'thinking'}
-                className={`w-full text-left px-4 py-3.5 rounded-xl border-2 transition-all text-sm min-h-[44px]
+                className={`w-full text-left px-4 py-3.5 rounded-xl border-2 transition-all text-sm min-h-[44px] lg:px-5 lg:py-4 lg:text-base
                   ${isSel ? 'border-blue-500 bg-blue-50 text-blue-900 font-medium'
                           : 'border-gray-100 bg-white text-gray-700 hover:border-gray-300'}
                   ${step === 'thinking' ? 'cursor-default' : 'active:scale-[0.98]'}`}>
@@ -1410,7 +1620,7 @@ export default function PracticePage() {
       )}
 
       {isPaperMode && (step === 'answering' || step === 'thinking') && (
-        <div className="fixed bottom-20 left-4 right-4 max-w-[calc(512px-2rem)] mx-auto">
+        <div className="fixed bottom-20 left-4 right-4 mx-auto max-w-[calc(512px-2rem)] lg:static lg:mt-5 lg:max-w-none">
           <div className="grid grid-cols-3 gap-3">
             <button
               type="button"
@@ -1444,6 +1654,39 @@ export default function PracticePage() {
         </div>
       )}
 
+      {!isPaperMode && (step === 'answering' || step === 'thinking') && (
+        <div className="fixed bottom-20 left-4 right-4 mx-auto max-w-[calc(512px-2rem)] lg:static lg:mt-5 lg:max-w-none">
+          <div className="grid grid-cols-3 gap-3">
+            <button
+              type="button"
+              onClick={() => resetQuestionView(Math.max(0, idx - 1))}
+              disabled={idx === 0}
+              className="py-3 border border-gray-200 bg-white text-gray-700 font-bold rounded-2xl text-sm disabled:opacity-40"
+            >
+              上一题
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (isLast) return
+                resetQuestionView(idx + 1)
+              }}
+              disabled={isLast}
+              className="py-3 border border-blue-200 bg-white text-blue-700 font-bold rounded-2xl text-sm disabled:opacity-40"
+            >
+              {currentRegularAnswered ? '下一题' : '先跳过'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setRegularCardCollapsed(value => !value)}
+              className="py-3 bg-blue-600 text-white font-bold rounded-2xl text-sm"
+            >
+              {regularCardCollapsed ? '展开题卡' : '收起题卡'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 选项（揭晓后） */}
       {step === 'revealed' && (
         <div className="space-y-2 mb-4">
@@ -1469,10 +1712,59 @@ export default function PracticePage() {
       {/* 深度模式思路框 */}
       {!isPaperMode && mode === 'deep' && step === 'thinking' && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
-          <p className="text-sm font-medium text-gray-700 mb-2">写下你的解题思路</p>
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <div>
+              <p className="text-sm font-medium text-gray-700">写下你的解题思路</p>
+              <p className="text-xs text-gray-400 mt-1">可以直接打字，也可以打开草稿板随手写写画画。</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowSketchPad(true)}
+              className="shrink-0 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700"
+            >
+              {thinkingSketch ? '查看草稿板' : '打开草稿板'}
+            </button>
+          </div>
+          <div className="mb-3 flex flex-wrap gap-2">
+            {deepThinkingPrompts.map(prompt => (
+              <button
+                key={prompt}
+                type="button"
+                onClick={() => setThinking(prev => prev.includes(prompt) ? prev : `${prev.trim()}${prev.trim() ? '\n' : ''}${prompt}`)}
+                className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs text-gray-600"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
           <textarea value={thinking} onChange={e => setThinking(e.target.value)}
             placeholder="你是怎么想到选这个答案的？写关键步骤即可..."
             className="w-full h-28 text-sm text-gray-700 border border-gray-100 rounded-xl p-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-400" />
+          {thinkingSketch && (
+            <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <p className="text-xs font-medium text-blue-600">已保存草稿</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowSketchPad(true)}
+                    className="text-xs text-blue-600 underline"
+                  >
+                    继续修改
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setThinkingSketch('')}
+                    className="text-xs text-red-500 underline"
+                  >
+                    删除草稿
+                  </button>
+                </div>
+              </div>
+              <img src={thinkingSketch} alt="解题草稿" className="max-h-40 rounded-xl border border-blue-100 bg-white" />
+              <p className="mt-2 text-[11px] text-blue-500">草稿会随本次深度练习一起提交，方便后续复盘。</p>
+            </div>
+          )}
           <div className="flex gap-2 mt-3">
             {thinking.trim() && (
               <button onClick={handleVerifyThinking} disabled={verifying}
@@ -1542,7 +1834,18 @@ export default function PracticePage() {
               try {
                 const res = await fetch(`/api/errors/${current.userErrorId}/diagnose`, { method: 'POST' })
                 const d   = await res.json()
-                if (d.analysis) setCustomAnalysis(d.analysis)
+                if (d.analysis) {
+                  setCustomAnalysis(d.analysis)
+                  setAiNotice(d.message ?? '')
+                  setRegularAnswers(prev => ({
+                    ...prev,
+                    [idx]: {
+                      selected: prev[idx]?.selected ?? selected ?? '',
+                      submitResult: prev[idx]?.submitResult ?? submitResult,
+                      customAnalysis: d.analysis,
+                    },
+                  }))
+                }
               } finally { setDiagnosing(false) }
             }} disabled={diagnosing}
               className="w-full py-2.5 border border-purple-200 text-purple-600 rounded-xl text-sm font-medium hover:bg-purple-50 disabled:opacity-50">
@@ -1551,7 +1854,29 @@ export default function PracticePage() {
           ) : (
             <div className="bg-purple-50 border border-purple-200 rounded-xl p-3">
               <p className="text-xs text-purple-500 font-medium mb-1">🔬 个性化诊断</p>
+              {aiNotice && (
+                <p className="mb-2 text-xs text-purple-500">{aiNotice}</p>
+              )}
               <p className="text-sm text-purple-800 whitespace-pre-wrap leading-relaxed">{customAnalysis}</p>
+            </div>
+          )}
+
+          {!isPaperMode && (
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => router.push(buildQuestionReviewNoteDraft(current, customAnalysis || current.question.sharedAiAnalysis || current.question.analysis || ''))}
+                className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm font-medium text-amber-700"
+              >
+                沉淀成笔记
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push(buildQuestionInsightDraft(current, customAnalysis || current.aiActionRule || ''))}
+                className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-sm font-medium text-blue-700"
+              >
+                补充规则摘要
+              </button>
             </div>
           )}
 
@@ -1602,6 +1927,168 @@ export default function PracticePage() {
           )}
         </div>
       )}
+
+      {showSketchPad && (
+        <SketchPadModal
+          initialImage={thinkingSketch}
+          onClose={() => setShowSketchPad(false)}
+          onSave={(image) => {
+            setThinkingSketch(image)
+            setShowSketchPad(false)
+          }}
+        />
+      )}
+
+      {previewImage && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center">
+          <div className="w-full max-w-lg rounded-t-3xl bg-white p-4 sm:rounded-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-gray-900">{getMediaLabel(current?.question?.type ?? '', true)}</p>
+                <p className="text-xs text-gray-400 mt-0.5">可以放大、缩小查看，适合资料分析和图形题。</p>
+              </div>
+              <button onClick={() => setPreviewImage(null)} className="text-2xl text-gray-400">×</button>
+            </div>
+            <div className="max-h-[70vh] overflow-auto rounded-2xl border border-gray-100 bg-gray-50 p-2">
+              <img src={previewImage} alt="题目放大图" className="w-full rounded-xl bg-white object-contain" />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SketchPadModal({
+  initialImage,
+  onClose,
+  onSave,
+}: {
+  initialImage: string
+  onClose: () => void
+  onSave: (image: string) => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const drawingRef = useRef(false)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const wrapper = wrapperRef.current
+    if (!canvas || !wrapper) return
+
+    const width = Math.max(320, Math.min(wrapper.clientWidth, 560))
+    const height = Math.round(width * 0.68)
+    canvas.width = width * window.devicePixelRatio
+    canvas.height = height * window.devicePixelRatio
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.scale(window.devicePixelRatio, window.devicePixelRatio)
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, width, height)
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.lineWidth = 3
+    ctx.strokeStyle = '#1f2937'
+
+    if (initialImage) {
+      const img = new Image()
+      img.onload = () => {
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, width, height)
+        ctx.drawImage(img, 0, 0, width, height)
+      }
+      img.src = initialImage
+    }
+  }, [initialImage])
+
+  function getPoint(event: React.PointerEvent<HTMLCanvasElement>) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    }
+  }
+
+  function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+    const canvas = canvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!canvas || !ctx) return
+    const point = getPoint(event)
+    drawingRef.current = true
+    ctx.beginPath()
+    ctx.moveTo(point.x, point.y)
+  }
+
+  function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (!drawingRef.current) return
+    const canvas = canvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!canvas || !ctx) return
+    const point = getPoint(event)
+    ctx.lineTo(point.x, point.y)
+    ctx.stroke()
+  }
+
+  function stopDrawing() {
+    drawingRef.current = false
+  }
+
+  function clearCanvas() {
+    const canvas = canvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!canvas || !ctx) return
+    const width = Number.parseFloat(canvas.style.width || '0')
+    const height = Number.parseFloat(canvas.style.height || '0')
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, width, height)
+  }
+
+  function saveCanvas() {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    onSave(canvas.toDataURL('image/png'))
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/45 flex items-end sm:items-center justify-center p-4">
+      <div className="w-full max-w-xl rounded-3xl bg-white shadow-2xl border border-gray-100 overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div>
+            <p className="text-base font-semibold text-gray-900">解题草稿板</p>
+            <p className="text-xs text-gray-400 mt-1">像在草稿纸上一样写写画画，保存后会跟随这道题一起复盘。</p>
+          </div>
+          <button onClick={onClose} className="text-2xl text-gray-400 leading-none">×</button>
+        </div>
+        <div className="p-4">
+          <div ref={wrapperRef} className="rounded-2xl border border-gray-200 bg-gray-50 p-2 overflow-auto">
+            <canvas
+              ref={canvasRef}
+              className="rounded-xl bg-white touch-none"
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={stopDrawing}
+              onPointerLeave={stopDrawing}
+            />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-gray-500">
+            <span className="rounded-full bg-gray-100 px-2.5 py-1">适合列条件</span>
+            <span className="rounded-full bg-gray-100 px-2.5 py-1">适合画图推理</span>
+            <span className="rounded-full bg-gray-100 px-2.5 py-1">适合资料草算</span>
+          </div>
+        </div>
+        <div className="flex gap-3 px-4 py-4 border-t border-gray-100 bg-gray-50">
+          <button onClick={clearCanvas} className="flex-1 rounded-2xl border border-gray-200 bg-white py-3 text-sm font-medium text-gray-700">
+            清空
+          </button>
+          <button onClick={saveCanvas} className="flex-1 rounded-2xl bg-blue-600 py-3 text-sm font-bold text-white">
+            保存草稿
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

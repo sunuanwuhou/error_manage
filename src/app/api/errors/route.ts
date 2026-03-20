@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { attachErrorToKnowledgeNote } from '@/lib/knowledge-notes'
 import { z } from 'zod'
 
 // GET /api/errors — 获取错题列表
@@ -17,10 +18,14 @@ export async function GET(req: NextRequest) {
   const type     = searchParams.get('type')
   const q        = searchParams.get('q')
   const status   = searchParams.get('status')   // stockified | active
+  const idsParam = searchParams.get('ids')
   const page     = parseInt(searchParams.get('page') ?? '1')
   const pageSize = 20
 
   const where: any = { userId }
+  if (idsParam) {
+    where.id = { in: idsParam.split(',').map(id => id.trim()).filter(Boolean) }
+  }
   if (type || q) {
     where.question = {}
     if (type) where.question.type = type
@@ -150,6 +155,20 @@ export async function POST(req: NextRequest) {
       nextReviewAt: new Date(),  // 立即可复习
     },
   })
+
+  attachErrorToKnowledgeNote({
+    userId,
+    userErrorId: userError.id,
+    question: {
+      type: question.type,
+      subtype: question.subtype,
+      sub2: question.sub2,
+      skillTags: question.skillTags,
+      content: question.content,
+    },
+    knowledgeTitle: question.sub2 || question.subtype || question.type,
+    summary: errorReason || '手动录入错题后自动沉淀的知识点草稿',
+  }).catch(() => {})
 
   // 异步触发 AI 首次诊断（不阻塞响应）
   // 公共解析：第一个做错的用户触发，后续用户零成本复用（§3.2）

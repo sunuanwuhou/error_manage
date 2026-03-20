@@ -123,13 +123,13 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-lg mx-auto px-4 pt-4 pb-8 space-y-6">
-      <h1 className="text-xl font-bold text-gray-900">设置</h1>
+      <h1 className="text-xl font-bold text-gray-900 lg:text-2xl">设置</h1>
       <p className="text-xs text-gray-400 -mt-4">
         这里只保留完整账号与备考配置；其他页面只读取摘要，不再反复打扰。
       </p>
 
       {/* 用户信息 */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 lg:p-5">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold text-lg">
             {username.charAt(0).toUpperCase()}
@@ -141,9 +141,9 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 lg:p-5">
         <h2 className="font-semibold text-gray-900 mb-3">其他功能</h2>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
           <Link href="/notes" className="rounded-xl bg-gray-50 px-4 py-3 text-sm text-gray-700">笔记</Link>
           <Link href="/papers" className="rounded-xl bg-gray-50 px-4 py-3 text-sm text-gray-700">套卷</Link>
           {(session?.user as any)?.role === 'admin' && (
@@ -152,7 +152,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 lg:p-5">
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
             <h2 className="font-semibold text-gray-900">数据导出</h2>
@@ -174,7 +174,7 @@ export default function SettingsPage() {
 
       {/* 考试配置 */}
       {config && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 lg:p-5">
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="font-semibold text-gray-900">备考配置</h2>
@@ -209,7 +209,7 @@ export default function SettingsPage() {
           </div>
           {showConfigDetail && (
             <form onSubmit={handleCfgSubmit} className="space-y-3 mt-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">考试类型</label>
                   <select value={config.examType} onChange={e => setConfig((c: any) => ({ ...c, examType: e.target.value }))}
@@ -226,7 +226,7 @@ export default function SettingsPage() {
                     className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">考试日期</label>
                   <input type="date" value={config.examDate?.split('T')[0] ?? ''}
@@ -261,7 +261,7 @@ export default function SettingsPage() {
       )}
 
       {/* 密码修改 */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 lg:p-5">
         <h2 className="font-semibold text-gray-900 mb-4">修改密码</h2>
         <form onSubmit={handlePwSubmit} className="space-y-3">
           {(['current', 'next', 'confirm'] as const).map((field, i) => (

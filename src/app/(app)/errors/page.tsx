@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { getQuestionState, STATE_LABELS } from '@/lib/mastery-engine'
 import { StateBadge } from '@/components/practice/state-badge'
 
@@ -33,17 +34,27 @@ const FILTERS = [
 const TYPE_FILTERS = ['', '判断推理', '言语理解', '数量关系', '资料分析', '常识判断']
 
 export default function ErrorsPage() {
+  const searchParams = useSearchParams()
   const [items, setItems]     = useState<ErrorItem[]>([])
-  const [search, setSearch]   = useState('')
+  const [search, setSearch]   = useState(searchParams.get('q') ?? '')
   const [total, setTotal]     = useState(0)
   const [loading, setLoading] = useState(true)
-  const [status, setStatus]   = useState('')
-  const [type, setType]       = useState('')
+  const [status, setStatus]   = useState(searchParams.get('status') ?? '')
+  const [type, setType]       = useState(searchParams.get('type') ?? '')
   const [page, setPage]       = useState(1)
+  const ids = searchParams.get('ids') ?? ''
+
+  useEffect(() => {
+    setSearch(searchParams.get('q') ?? '')
+    setStatus(searchParams.get('status') ?? '')
+    setType(searchParams.get('type') ?? '')
+    setPage(1)
+  }, [searchParams])
 
   useEffect(() => {
     setLoading(true)
     const params = new URLSearchParams()
+    if (ids) params.set('ids', ids)
     if (status) params.set('status', status)
     if (type)   params.set('type', type)
     if (search)  params.set('q', search)
@@ -52,13 +63,16 @@ export default function ErrorsPage() {
     fetch(`/api/errors?${params}`)
       .then(r => r.json())
       .then(data => { setItems(data.items); setTotal(data.total); setLoading(false) })
-  }, [status, type, page, search])
+  }, [status, type, page, search, ids])
 
   return (
     <div className="max-w-lg mx-auto px-4 pt-4">
       {/* 头部 */}
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-bold text-gray-900">错题本</h1>
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-gray-900 lg:text-2xl">错题本</h1>
+          <p className="mt-1 text-xs text-gray-400">集中看待复习题、连续出错题和可沉淀的复盘素材。</p>
+        </div>
         <div className="flex gap-2">
           <Link href="/import" className="border border-gray-200 text-gray-600 text-sm px-3 py-2 rounded-xl font-medium min-h-[44px] flex items-center">📂 导入</Link>
           <Link href="/errors/batch" className="border border-blue-600 text-blue-600 text-sm px-3 py-2 rounded-xl font-medium min-h-[44px] flex items-center">批量</Link>
@@ -126,7 +140,7 @@ export default function ErrorsPage() {
           </Link>
         </div>
       ) : (
-        <div className="space-y-3 pb-6">
+        <div className="grid gap-3 pb-6 lg:grid-cols-2 xl:grid-cols-3">
           {items.map(item => {
             const state = getQuestionState({
               masteryPercent: item.masteryPercent,
@@ -136,7 +150,7 @@ export default function ErrorsPage() {
             const isOverdue = new Date(item.nextReviewAt) <= new Date()
 
             return (
-              <div key={item.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+              <div key={item.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 lg:p-5">
                 {/* 题型 + 状态 */}
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
@@ -157,10 +171,10 @@ export default function ErrorsPage() {
                   <img
                     src={item.question.questionImage}
                     alt="题目图片"
-                    className="mb-2 w-full rounded-xl border border-gray-100"
+                    className="mb-2 w-full rounded-xl border border-gray-100 object-contain lg:h-44"
                   />
                 )}
-                <p className="text-sm text-gray-700 line-clamp-2 mb-2">
+                <p className="text-sm text-gray-700 line-clamp-3 mb-2">
                   {item.question.content}
                 </p>
 
@@ -190,7 +204,7 @@ export default function ErrorsPage() {
 
           {/* 分页 */}
           {total > 20 && (
-            <div className="flex justify-center gap-3 pt-2">
+            <div className="flex justify-center gap-3 pt-2 lg:col-span-full">
               <button
                 disabled={page === 1}
                 onClick={() => setPage(p => p - 1)}
