@@ -231,6 +231,16 @@ AI 价值优先级：
 
 - `npx tsc --noEmit`
 - `npm run build`
+- `npm run smoke:backend`
+- `npm run smoke:frontend`
+- `npm run smoke:all`
+- 规则升级：默认不是“按需挑几条测试跑”，而是“每次功能实现或修改后，前后端整套冒烟都要跑一遍”
+- 后端冒烟默认包括：
+  - `npm run typecheck`
+  - `npm run build`
+  - `npm run test:import`
+- 前端冒烟默认包括：
+  - `npm run test:e2e`
 - 开发服务是否真实监听 `3000`
 - 如果 `dev:restart` 失败或结果可疑，必须继续区分：
   - 是后台启动脚本失效
@@ -268,8 +278,15 @@ AI 价值优先级：
 - 未通过以下检查前，不应向用户声称“完成”：
   - `npx tsc --noEmit`
   - `npm run build`
+  - `npm run smoke:backend`
+  - `npm run smoke:frontend`
+  - `npm run smoke:all`
   - 开发服务真实可启动并可访问
   - 本次改动涉及的主流程至少完成一轮针对性验证
+- 默认交付规则升级：
+  - 只要发生功能实现、功能修改、链路修复、页面交互调整，默认都要重跑前后端全部冒烟
+  - 不能因为“这次只是前端改动”或“这次只是后端改动”就跳过另一侧的 smoke
+  - 只有用户明确要求跳过，或当前环境存在无法自行跨越的真实阻塞，才允许例外
 - 如果 `dev:restart` 日志显示成功，但端口、进程或页面不可用，以“未通过验证”处理，必须继续排查。
 - 对启动失败的排查顺序固定为：
   - 先看 3000 端口是否真的监听

@@ -1,6 +1,6 @@
 # Current Snapshot
 
-Updated: 2026-03-20 15:10 CST
+Updated: 2026-03-21 00:10 CST
 
 ## Current Goal
 
@@ -11,6 +11,14 @@ Updated: 2026-03-20 15:10 CST
   - 除非遇到真实阻塞、不可替代的外部信息缺失、或高风险操作确认，否则不主动打扰用户
 
 ## What Changed
+
+- 2026-03-21 新固化：每次功能实现或修改后，默认必须重跑前后端全部冒烟
+  - 新增统一脚本：
+    - `npm run smoke:backend`
+    - `npm run smoke:frontend`
+    - `npm run smoke:all`
+  - 当前项目默认验收不再接受“只跑局部测试”作为完成依据
+  - 只有用户明确要求跳过，或环境存在真实阻塞时，才允许不跑完整 smoke
 
 - 2026-03-20 新固化：Docker 开发挂载 + 自动 Cloudflare Tunnel 已落地
   - `docker-compose.dev.yml` 现在会同时启动 `app / db / tunnel`
