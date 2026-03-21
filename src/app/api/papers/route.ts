@@ -1,21 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
+
 import { authOptions } from '@/lib/auth'
 import { getPaperCatalog, getPaperDetail } from '@/lib/papers'
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session?.user) return NextResponse.json({ error: '未登录' }, { status: 401 })
+  const userId = (session.user as { id?: string }).id
 
   const { searchParams } = new URL(req.url)
   const paperKey = searchParams.get('paper') ?? searchParams.get('session')
 
   if (paperKey) {
-    const detail = await getPaperDetail(paperKey)
+    const detail = await getPaperDetail(paperKey, userId)
     if (detail.error) {
       return NextResponse.json(
         { error: detail.error },
-        { status: detail.error === '套卷标识无效' ? 400 : 404 }
+        { status: detail.error === '套卷标识无效' ? 400 : 404 },
       )
     }
 

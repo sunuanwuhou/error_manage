@@ -5,6 +5,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { inferPaperSourceMeta } from '@/lib/paper-source'
 
 type Step = 'upload' | 'preview' | 'done'
 type DuplicateMode = 'skip' | 'replace_low_quality' | 'force_replace'
@@ -25,6 +26,12 @@ interface ParseResult {
   preview:  PreviewItem[]
   warnings: string[]
   payload:  string
+  inferredMeta?: {
+    srcName?: string
+    srcYear?: string
+    srcProvince?: string
+    examType?: string
+  }
 }
 
 interface PayloadQuestion {
@@ -176,13 +183,13 @@ export default function ImportPage() {
     setUploadError('')
 
     const lowerName = file.name.toLowerCase()
-    if (!lowerName.endsWith('.docx')) {
+    if (!lowerName.endsWith('.docx') && !lowerName.endsWith('.pdf')) {
       setUploading(false)
-      setUploadError(lowerName.endsWith('.doc') ? '暂不直接支持 .doc，请先另存为 .docx 后再导入' : '当前只支持 DOCX 导入，请上传 .docx 文件')
+      setUploadError(lowerName.endsWith('.doc') ? '暂不直接支持 .doc，请先另存为 .docx 后再导入' : '当前只支持 PDF 或 DOCX 导入，请上传 .pdf 或 .docx 文件')
       return
     }
 
-    const inferred = inferImportMeta(file.name)
+    const inferred = inferPaperSourceMeta({ fileName: file.name })
     const effectiveExamType = examType || inferred.examType || 'guo_kao'
     const effectiveSrcName = srcName.trim() || inferred.srcName
     if (!srcName.trim() && inferred.srcName) setSrcName(inferred.srcName)
@@ -205,6 +212,12 @@ export default function ImportPage() {
         throw new Error(`解析接口返回异常（HTTP ${res.status}）`)
       }
       if (!res.ok) { setUploadError(data.error ?? '上传失败'); return }
+      if (!srcName.trim() && data.inferredMeta?.srcName) setSrcName(data.inferredMeta.srcName)
+      if (!srcYear.trim() && data.inferredMeta?.srcYear) setSrcYear(data.inferredMeta.srcYear)
+      if (!srcProvince.trim() && data.inferredMeta?.srcProvince) setSrcProvince(data.inferredMeta.srcProvince)
+      if (examType === 'guo_kao' && data.inferredMeta?.examType && data.inferredMeta.examType !== examType) {
+        setExamType(data.inferredMeta.examType)
+      }
       setResult(data)
       // 默认选中整份文件，而不是只选预览区前 50 题
       setSelected(new Set(Array.from({ length: data.total }, (_, i) => i)))
@@ -546,7 +559,7 @@ export default function ImportPage() {
         <button onClick={() => router.back()} className="text-gray-400 text-xl min-h-[44px] min-w-[44px] flex items-center">←</button>
         <div>
           <h1 className="text-xl font-bold text-gray-900 lg:text-2xl">导入真题</h1>
-          <p className="text-xs text-gray-400 mt-0.5">当前主入口只支持 Word DOCX 导入</p>
+          <p className="text-xs text-gray-400 mt-0.5">当前主入口支持 PDF 和 Word DOCX 导入</p>
         </div>
       </div>
 
@@ -612,14 +625,14 @@ export default function ImportPage() {
         className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-colors
           ${dragging ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'}`}
       >
-        <input ref={fileRef} type="file" accept=".docx" className="hidden"
+        <input ref={fileRef} type="file" accept=".pdf,.docx" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
         <div className="text-4xl mb-3">{uploading ? '⏳' : '📂'}</div>
         {uploading ? (
           <div className="space-y-2">
             <div className="animate-spin text-3xl">⏳</div>
             <p className="font-semibold text-gray-700">解析中，请稍候...</p>
-            <p className="text-xs text-gray-400">DOCX 正在提取题干、材料图和图片选项</p>
+            <p className="text-xs text-gray-400">正在解析 PDF 或 DOCX，提取题干、选项和试卷元数据</p>
             <div className="w-32 h-1 bg-gray-200 rounded-full overflow-hidden mx-auto">
               <div className="h-full bg-blue-500 rounded-full animate-pulse" style={{width:'60%'}} />
             </div>
@@ -627,7 +640,7 @@ export default function ImportPage() {
         ) : (
           <>
             <p className="font-semibold text-gray-700">点击或拖拽文件到这里</p>
-            <p className="text-sm text-gray-400 mt-1">仅支持 DOCX · 最大 20MB</p>
+            <p className="text-sm text-gray-400 mt-1">支持 PDF / DOCX · 最大 20MB</p>
           </>
         )}
       </div>
@@ -643,7 +656,9 @@ export default function ImportPage() {
         <p className="text-xs font-medium text-gray-500">推荐导入格式</p>
         {[
           { icon: '📝', name: 'DOCX（Word 题库文档）',
-            desc: '当前正式入口只支持 DOCX，会优先保留题干内联图、资料分析材料图和图片选项。' },
+            desc: 'DOCX 走独立文档解析链，会优先保留题干内联图、资料分析材料图和图片选项。' },
+          { icon: '📄', name: 'PDF（粉笔/回忆版试卷）',
+            desc: 'PDF 走独立文本抽取链，优先支持粉笔这类文字版回忆卷。扫描版建议改走 OCR。' },
           { icon: '⚠️', name: '.doc（旧版 Word）',
             desc: '请先在 Word 里另存为 .docx，再导入系统。' },
         ].map(f => (

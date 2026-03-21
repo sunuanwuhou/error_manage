@@ -52,6 +52,7 @@ interface SubmitResult {
   isHot:            boolean
   reboundAlert:     boolean
   addedToErrorBook?: boolean
+  userErrorId?:     string | null
 }
 
 const MODE_KEY = 'pref_practice_mode'
@@ -60,6 +61,7 @@ interface PaperAnswerState {
   selected: string
   submitResult: SubmitResult | null
   timeSpentSeconds: number
+  customAnalysis?: string
 }
 
 interface RegularAnswerState {
@@ -729,6 +731,7 @@ export default function PracticePage() {
               selected: sel,
               submitResult: result,
               timeSpentSeconds: timeSpent,
+              customAnalysis: paperAnswers[idx]?.customAnalysis,
             },
           }
           const nextPaperAnswered = new Set(paperAnswered)
@@ -739,6 +742,7 @@ export default function PracticePage() {
               selected: sel,
               submitResult: result,
               timeSpentSeconds: timeSpent,
+              customAnalysis: prev[idx]?.customAnalysis,
             },
           }))
           setPaperAnswered(nextPaperAnswered)
@@ -806,7 +810,7 @@ export default function PracticePage() {
     setSelected(answeredState?.selected ?? null)
     setThinking('')
     setVerdict(null)
-    setCustomAnalysis(!paper && answeredState && 'customAnalysis' in answeredState ? answeredState.customAnalysis ?? '' : '')
+    setCustomAnalysis(answeredState && 'customAnalysis' in answeredState ? answeredState.customAnalysis ?? '' : '')
     setAiNotice('')
     setVerdictFeedback('')
     setSubmitError('')

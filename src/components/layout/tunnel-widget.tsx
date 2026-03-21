@@ -1,9 +1,6 @@
 'use client'
-// src/components/layout/tunnel-widget.tsx
-// Cloudflare Tunnel 控制面板 Widget
-// 显示在管理员页面顶部，启动/停止隧道，固化显示当前域名
 
-import { useEffect, useState, useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 interface TunnelStatus {
   running: boolean
@@ -11,15 +8,18 @@ interface TunnelStatus {
   pid: number | null
   binarySource?: 'system' | 'downloaded'
   nextAuthUrl?: string | null
+  publicOrigin?: string | null
+  publicOriginSource?: 'runtime' | 'tunnel' | 'env' | null
+  publicAuthActive?: boolean
   nextAuthMatchesTunnel?: boolean
   nextAuthWarning?: string | null
   autoDownloadSupported?: boolean
 }
 
 export function TunnelWidget() {
-  const [status, setStatus]   = useState<TunnelStatus | null>(null)
+  const [status, setStatus] = useState<TunnelStatus | null>(null)
   const [loading, setLoading] = useState(false)
-  const [copied, setCopied]   = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -30,7 +30,6 @@ export function TunnelWidget() {
 
   useEffect(() => {
     fetchStatus()
-    // 隧道启动中时每3秒轮询
     const timer = setInterval(fetchStatus, 5000)
     return () => clearInterval(timer)
   }, [fetchStatus])
@@ -38,19 +37,19 @@ export function TunnelWidget() {
   async function handleStart() {
     setLoading(true)
     try {
-      const res  = await fetch('/api/tunnel', {
-        method:  'POST',
+      const res = await fetch('/api/tunnel', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ action: 'start' }),
+        body: JSON.stringify({ action: 'start' }),
       })
       const data = await res.json()
       if (data.error) {
-        alert(data.error + (data.hint ? `\n\n安装方式：\n${data.hint}` : ''))
+        alert(data.error + (data.hint ? `\n\n${data.hint}` : ''))
       } else {
         setStatus(data)
       }
     } catch {
-      alert('启动失败，请检查网络')
+      alert('启动失败，请检查网络和 cloudflared 状态')
     } finally {
       setLoading(false)
     }
@@ -59,20 +58,14 @@ export function TunnelWidget() {
   async function handleStop() {
     setLoading(true)
     try {
-      await fetch('/api/tunnel', {
-        method:  'POST',
+      const res = await fetch('/api/tunnel', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ action: 'stop' }),
+        body: JSON.stringify({ action: 'stop' }),
       })
-      setStatus({
-        running: false,
-        url: null,
-        pid: null,
-        nextAuthUrl: status?.nextAuthUrl ?? null,
-        nextAuthMatchesTunnel: true,
-        nextAuthWarning: null,
-        autoDownloadSupported: status?.autoDownloadSupported,
-      })
+      if (res.ok) {
+        setStatus(await res.json())
+      }
     } finally {
       setLoading(false)
     }
@@ -86,80 +79,84 @@ export function TunnelWidget() {
   }
 
   return (
-    <div className={`rounded-2xl border p-4 mb-5 transition-colors
-      ${status?.running
-        ? 'bg-green-50 border-green-200'
-        : 'bg-gray-50 border-gray-200'}`}>
-
-      <div className="flex items-center justify-between mb-2">
+    <div
+      className={`mb-5 rounded-2xl border p-4 transition-colors ${
+        status?.running ? 'border-green-200 bg-green-50' : 'border-gray-200 bg-gray-50'
+      }`}
+    >
+      <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${status?.running ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`} />
+          <span className={`h-2 w-2 rounded-full ${status?.running ? 'animate-pulse bg-green-500' : 'bg-gray-300'}`} />
           <span className="text-sm font-semibold text-gray-700">Cloudflare Tunnel</span>
           {status?.running && (
-            <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full">运行中</span>
+            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-600">运行中</span>
           )}
         </div>
 
         <button
           onClick={status?.running ? handleStop : handleStart}
           disabled={loading}
-          className={`text-sm px-4 py-1.5 rounded-xl font-medium min-h-[36px] transition-colors disabled:opacity-50
-            ${status?.running
-              ? 'bg-red-100 text-red-600 hover:bg-red-200'
-              : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+          className={`min-h-[36px] rounded-xl px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50 ${
+            status?.running ? 'bg-red-100 text-red-600 hover:bg-red-200' : 'bg-blue-600 text-white hover:bg-blue-700'
+          }`}
         >
           {loading ? '处理中...' : status?.running ? '停止' : '启动'}
         </button>
       </div>
 
-      {/* 域名显示区 */}
       {status?.running && status.url ? (
-        <div className="flex items-center gap-2 mt-2">
-          <div className="flex-1 bg-white rounded-xl border border-green-200 px-3 py-2 overflow-hidden">
-            <p className="text-xs text-gray-400 mb-0.5">外网访问地址</p>
-            <p className="text-sm font-mono text-blue-600 truncate">{status.url}</p>
+        <div className="mt-2 flex items-center gap-2">
+          <div className="flex-1 overflow-hidden rounded-xl border border-green-200 bg-white px-3 py-2">
+            <p className="mb-0.5 text-xs text-gray-400">外网访问地址</p>
+            <p className="truncate font-mono text-sm text-blue-600">{status.url}</p>
           </div>
           <button
             onClick={copyUrl}
-            className="px-3 py-2 bg-white border border-green-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 min-h-[52px] flex-shrink-0"
+            className="min-h-[52px] flex-shrink-0 rounded-xl border border-green-200 bg-white px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
           >
-            {copied ? '✓' : '复制'}
+            {copied ? '已复制' : '复制'}
           </button>
         </div>
       ) : !status?.running ? (
         <div>
-          <p className="text-xs text-gray-400 mt-1">
-            启动后获得 trycloudflare.com 随机域名，手机可直接访问
-          </p>
+          <p className="mt-1 text-xs text-gray-400">启动后会拿到一个 `trycloudflare.com` 外网地址，手机可直接访问。</p>
           {status?.autoDownloadSupported ? (
-            <p className="text-xs text-gray-400 mt-0.5">
-              未安装 <code className="bg-gray-100 px-1 rounded">cloudflared</code> 时，管理员页会尝试自动下载官方二进制。
+            <p className="mt-0.5 text-xs text-gray-400">
+              未安装 <code className="rounded bg-gray-100 px-1">cloudflared</code> 时，项目会尝试自动下载官方二进制。
             </p>
           ) : (
-            <p className="text-xs text-gray-400 mt-0.5">
-              ⚠️ 当前平台不支持自动下载时，需先安装：<code className="bg-gray-100 px-1 rounded">brew install cloudflared</code>
+            <p className="mt-0.5 text-xs text-gray-400">
+              当前平台不支持自动下载时，需要先手动安装 <code className="rounded bg-gray-100 px-1">cloudflared</code>。
             </p>
           )}
         </div>
       ) : (
-        <p className="text-xs text-gray-400 mt-1 animate-pulse">正在启动，等待域名分配...</p>
+        <p className="mt-1 animate-pulse text-xs text-gray-400">正在启动，等待域名分配...</p>
+      )}
+
+      {status?.running && status.publicOrigin && (
+        <div className="mt-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2">
+          <p className="text-xs text-blue-700">当前认证回调基地址</p>
+          <p className="mt-1 break-all font-mono text-sm text-blue-700">{status.publicOrigin}</p>
+        </div>
       )}
 
       {status?.running && status.nextAuthWarning && (
         <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
-          <p className="text-xs text-amber-700 leading-5">{status.nextAuthWarning}</p>
+          <p className="text-xs leading-5 text-amber-700">{status.nextAuthWarning}</p>
           {status.nextAuthUrl && (
-            <p className="text-xs text-amber-700 mt-1">
-              当前配置：<code className="bg-amber-100 px-1 rounded">{status.nextAuthUrl}</code>
+            <p className="mt-1 text-xs text-amber-700">
+              当前 `.env.local` 为 <code className="rounded bg-amber-100 px-1">{status.nextAuthUrl}</code>
             </p>
           )}
         </div>
       )}
 
-      {/* 提示：每次重启域名会变 */}
       {status?.running && (
-        <p className="text-xs text-gray-400 mt-2">
-          ⚠️ 每次重启域名会变化，仅用于测试。{status.binarySource === 'downloaded' ? '本次使用的是自动下载的 cloudflared。' : ''} 固定域名需升级 Cloudflare Zero Trust。
+        <p className="mt-2 text-xs text-gray-400">
+          每次重启 Quick Tunnel 域名都会变化，仅适合测试。
+          {status.binarySource === 'downloaded' ? ' 当前使用的是项目自动下载的 cloudflared。' : ''}
+          {status.publicAuthActive ? ' 当前认证回调也已切到外网。' : ' 固定域名仍建议切到 Named Tunnel。'}
         </p>
       )}
     </div>

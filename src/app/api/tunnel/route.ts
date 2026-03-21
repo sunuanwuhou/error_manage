@@ -1,22 +1,29 @@
-// src/app/api/tunnel/route.ts
-// Cloudflare Tunnel 管理 API
-// 启动 cloudflared，捕获随机域名，存入 .tunnel-url 文件
-
-import { NextRequest, NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth'
 import { exec, spawn } from 'child_process'
-import { promisify } from 'util'
 import fs from 'fs'
-import path from 'path'
 import os from 'os'
+import path from 'path'
+import { getServerSession } from 'next-auth'
+import { NextRequest, NextResponse } from 'next/server'
+import { promisify } from 'util'
 
-const execAsync   = promisify(exec)
-const TUNNEL_FILE = path.join(process.cwd(), '.tunnel-url')  // 存储当前隧道URL
-const PID_FILE    = path.join(process.cwd(), '.tunnel-pid')  // 存储 cloudflared PID
-const RUNTIME_DIR = path.join(process.cwd(), '.runtime')
+import { authOptions } from '@/lib/auth'
+import {
+  clearRuntimePublicOrigin,
+  clearTunnelUrl,
+  getPublicOriginState,
+  getRuntimeDir,
+  readTunnelUrl,
+  syncNextAuthUrlFromRuntime,
+  writeRuntimePublicOrigin,
+  writeTunnelUrl,
+} from '@/lib/runtime-public-url'
+
+const execAsync = promisify(exec)
+const RUNTIME_DIR = getRuntimeDir()
+const PID_FILE = path.join(RUNTIME_DIR, 'tunnel.pid')
 const CLOUDFLARED_DIR = path.join(RUNTIME_DIR, 'cloudflared')
 const DOWNLOADED_CLOUDFLARED = path.join(CLOUDFLARED_DIR, 'cloudflared')
+const LOCAL_TARGET_URL = 'http://localhost:3000'
 
 type TunnelBinarySource = 'system' | 'downloaded'
 
@@ -39,7 +46,6 @@ function getCloudflaredDownload() {
       url: 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz',
       archiveName: 'cloudflared-darwin-arm64.tgz',
       archiveType: 'tgz' as const,
-      targetName: 'cloudflared',
     }
   }
 
@@ -48,7 +54,6 @@ function getCloudflaredDownload() {
       url: 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz',
       archiveName: 'cloudflared-darwin-amd64.tgz',
       archiveType: 'tgz' as const,
-      targetName: 'cloudflared',
     }
   }
 
@@ -57,7 +62,6 @@ function getCloudflaredDownload() {
       url: 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64',
       archiveName: 'cloudflared-linux-arm64',
       archiveType: 'raw' as const,
-      targetName: 'cloudflared',
     }
   }
 
@@ -66,7 +70,6 @@ function getCloudflaredDownload() {
       url: 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64',
       archiveName: 'cloudflared-linux-amd64',
       archiveType: 'raw' as const,
-      targetName: 'cloudflared',
     }
   }
 
@@ -76,7 +79,7 @@ function getCloudflaredDownload() {
 async function downloadToFile(url: string, filePath: string) {
   const res = await fetch(url, { redirect: 'follow' })
   if (!res.ok || !res.body) {
-    throw new Error(`下载失败：HTTP ${res.status}`)
+    throw new Error(`download failed: HTTP ${res.status}`)
   }
 
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
@@ -101,7 +104,7 @@ async function ensureBundledCloudflared() {
 
   const download = getCloudflaredDownload()
   if (!download) {
-    throw new Error(`当前系统暂不支持自动下载 cloudflared：${os.platform()} ${os.arch()}`)
+    throw new Error(`automatic cloudflared download is not supported on ${os.platform()} ${os.arch()}`)
   }
 
   await fs.promises.mkdir(CLOUDFLARED_DIR, { recursive: true })
@@ -122,7 +125,7 @@ async function ensureBundledCloudflared() {
       child.on('error', reject)
       child.on('close', (code) => {
         if (code === 0) resolve()
-        else reject(new Error(stderr || `tar 解压失败，code=${code}`))
+        else reject(new Error(stderr || `tar extract failed: code=${code}`))
       })
     })
   } else {
@@ -135,8 +138,9 @@ async function ensureBundledCloudflared() {
 
 async function resolveCloudflaredBinary(): Promise<{ path: string; source: TunnelBinarySource }> {
   try {
-    const { stdout } = await execAsync('which cloudflared')
-    const binaryPath = stdout.trim()
+    const locator = process.platform === 'win32' ? 'where cloudflared' : 'which cloudflared'
+    const { stdout } = await execAsync(locator)
+    const binaryPath = stdout.split(/\r?\n/).map(item => item.trim()).find(Boolean)
     if (binaryPath) return { path: binaryPath, source: 'system' }
   } catch {}
 
@@ -146,90 +150,80 @@ async function resolveCloudflaredBinary(): Promise<{ path: string; source: Tunne
   return { path: await ensureBundledCloudflared(), source: 'downloaded' }
 }
 
-function getNextAuthAdvice(url: string | null) {
-  const configured = process.env.NEXTAUTH_URL?.trim() || null
-  const normalizedConfigured = configured?.replace(/\/$/, '') || null
-  const normalizedTunnel = url?.replace(/\/$/, '') || null
+function getPublicOriginAdvice() {
+  const state = getPublicOriginState()
+  const usingExternalOrigin = Boolean(
+    state.effectivePublicOrigin && state.effectivePublicOrigin !== LOCAL_TARGET_URL,
+  )
 
-  if (!normalizedTunnel) {
-    return {
-      nextAuthUrl: normalizedConfigured,
-      nextAuthMatchesTunnel: true,
-      nextAuthWarning: null,
-    }
-  }
-
-  const matches = normalizedConfigured === normalizedTunnel
   return {
-    nextAuthUrl: normalizedConfigured,
-    nextAuthMatchesTunnel: matches,
-    nextAuthWarning: matches
-      ? null
-      : '当前 NEXTAUTH_URL 和临时外网域名不一致，外网登录回调可能跳回 localhost。若需稳定外网登录，请把 .env.local 中的 NEXTAUTH_URL 改成当前 tunnel 地址后重启开发服务。',
+    nextAuthUrl: state.configuredNextAuthUrl,
+    publicOrigin: state.effectivePublicOrigin,
+    publicOriginSource: state.publicOriginSource,
+    nextAuthMatchesTunnel: state.nextAuthMatchesEffectiveOrigin,
+    publicAuthActive: Boolean(state.tunnelUrl && usingExternalOrigin),
+    nextAuthWarning: state.tunnelUrl && !usingExternalOrigin
+      ? 'Tunnel is running, but auth callbacks are still not using the public origin.'
+      : null,
   }
 }
 
 async function requireAdmin() {
   const session = await getServerSession(authOptions)
   if (!session?.user) return null
-  if ((session.user as any).role !== 'admin') return null
+  if ((session.user as { role?: string }).role !== 'admin') return null
   return session
-}
-
-function readTunnelUrl(): string | null {
-  try {
-    if (fs.existsSync(TUNNEL_FILE)) {
-      return fs.readFileSync(TUNNEL_FILE, 'utf-8').trim() || null
-    }
-  } catch {}
-  return null
 }
 
 function readPid(): number | null {
   try {
     if (fs.existsSync(PID_FILE)) {
-      const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim())
-      return isNaN(pid) ? null : pid
+      const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10)
+      return Number.isNaN(pid) ? null : pid
     }
   } catch {}
   return null
 }
 
-function isProcessRunning(pid: number): boolean {
+function isProcessRunning(pid: number) {
   try {
-    process.kill(pid, 0)  // signal 0 = check if process exists
+    process.kill(pid, 0)
     return true
   } catch {
     return false
   }
 }
 
-// GET — 查询隧道状态
-export async function GET() {
-  if (!await requireAdmin()) return NextResponse.json({ error: '无权限' }, { status: 403 })
+function clearPidFile() {
+  try {
+    if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE)
+  } catch {}
+}
 
-  const url = readTunnelUrl()
+export async function GET() {
+  if (!await requireAdmin()) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  }
+
+  syncNextAuthUrlFromRuntime()
+
   const pid = readPid()
   const running = pid ? isProcessRunning(pid) : false
-  const nextAuth = getNextAuthAdvice(running ? url : null)
-
-  // 进程不在但文件还在，清理
-  if (!running && pid) {
-    try { fs.unlinkSync(PID_FILE) } catch {}
-  }
+  if (!running) clearPidFile()
 
   return NextResponse.json({
     running,
-    url: running ? url : null,
+    url: running ? readTunnelUrl() : null,
     pid: running ? pid : null,
-    ...nextAuth,
-    autoDownloadSupported: !!getCloudflaredDownload(),
+    autoDownloadSupported: Boolean(getCloudflaredDownload()),
+    ...getPublicOriginAdvice(),
   })
 }
 
-// POST — 启动或停止隧道
 export async function POST(req: NextRequest) {
-  if (!await requireAdmin()) return NextResponse.json({ error: '无权限' }, { status: 403 })
+  if (!await requireAdmin()) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  }
 
   const { action } = await req.json()
 
@@ -238,91 +232,107 @@ export async function POST(req: NextRequest) {
     if (pid && isProcessRunning(pid)) {
       try {
         process.kill(pid, 'SIGTERM')
-        await new Promise(r => setTimeout(r, 500))
+        await new Promise(resolve => setTimeout(resolve, 500))
         if (isProcessRunning(pid)) process.kill(pid, 'SIGKILL')
       } catch {}
     }
-    try { fs.unlinkSync(PID_FILE) }  catch {}
-    try { fs.unlinkSync(TUNNEL_FILE) } catch {}
-    return NextResponse.json({ ok: true, running: false })
+
+    clearPidFile()
+    clearTunnelUrl()
+    clearRuntimePublicOrigin()
+    return NextResponse.json({ ok: true, running: false, ...getPublicOriginAdvice() })
   }
 
-  if (action === 'start') {
-    // 先停掉旧的
-    const oldPid = readPid()
-    if (oldPid && isProcessRunning(oldPid)) {
-      try { process.kill(oldPid, 'SIGTERM') } catch {}
-      await new Promise(r => setTimeout(r, 500))
-    }
-    try { fs.unlinkSync(TUNNEL_FILE) } catch {}
+  if (action !== 'start') {
+    return NextResponse.json({ error: 'unknown action' }, { status: 400 })
+  }
 
-    // 优先使用系统自带 cloudflared；没有时自动下载到项目运行目录
-    let binary: { path: string; source: TunnelBinarySource }
+  const oldPid = readPid()
+  if (oldPid && isProcessRunning(oldPid)) {
     try {
-      binary = await resolveCloudflaredBinary()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '自动准备 cloudflared 失败'
-      return NextResponse.json({
-        error: `cloudflared 不可用：${message}`,
-        hint:  '可手动安装 cloudflared；Mac 推荐 brew install cloudflared。若不安装，管理员页会尝试自动下载支持平台的官方二进制。',
-      }, { status: 400 })
+      process.kill(oldPid, 'SIGTERM')
+      await new Promise(resolve => setTimeout(resolve, 500))
+    } catch {}
+  }
+
+  clearPidFile()
+  clearTunnelUrl()
+  clearRuntimePublicOrigin()
+
+  let binary: { path: string; source: TunnelBinarySource }
+  try {
+    binary = await resolveCloudflaredBinary()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'cloudflared setup failed'
+    return NextResponse.json(
+      {
+        error: `cloudflared is unavailable: ${message}`,
+        hint: 'Install cloudflared manually, or let the project download the official binary on supported platforms.',
+      },
+      { status: 400 },
+    )
+  }
+
+  return new Promise<NextResponse>((resolve) => {
+    const child = spawn(binary.path, ['tunnel', '--url', LOCAL_TARGET_URL], {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    child.unref()
+    fs.mkdirSync(RUNTIME_DIR, { recursive: true })
+    fs.writeFileSync(PID_FILE, String(child.pid))
+
+    let settled = false
+    const finish = (response: NextResponse) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      resolve(response)
     }
 
-    // 启动 cloudflared，监听 stderr 获取随机域名
-    return new Promise<NextResponse>((resolve) => {
-      const child = spawn(binary.path, ['tunnel', '--url', 'http://localhost:3000'], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
+    const timeout = setTimeout(() => {
+      finish(NextResponse.json({ error: 'cloudflared start timed out' }, { status: 500 }))
+    }, 20_000)
 
-      child.unref()
-      fs.writeFileSync(PID_FILE, String(child.pid))
+    const onData = (data: Buffer) => {
+      const text = data.toString()
+      const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
+      if (!match) return
 
-      let urlFound = false
-      const timeout = setTimeout(() => {
-        if (!urlFound) {
-          resolve(NextResponse.json({ error: '启动超时，请检查 cloudflared 是否正常' }, { status: 500 }))
-        }
-      }, 20000)
-
-      // cloudflared 把隧道 URL 输出到 stderr
-      const onData = (data: Buffer) => {
-        const text = data.toString()
-        const match = text.match(/https:\/\/[a-z0-9\-]+\.trycloudflare\.com/)
-        if (match && !urlFound) {
-          urlFound = true
-          clearTimeout(timeout)
-          const url = match[0]
-          fs.writeFileSync(TUNNEL_FILE, url)
-          resolve(NextResponse.json({
-            ok: true,
-            running: true,
-            url,
-            pid: child.pid,
-            binarySource: binary.source,
-            autoDownloadSupported: !!getCloudflaredDownload(),
-            ...getNextAuthAdvice(url),
-          }))
-        }
+      const url = match[0]
+      const publicOrigin = writeRuntimePublicOrigin(url)
+      writeTunnelUrl(url)
+      if (publicOrigin) {
+        process.env.NEXTAUTH_URL = publicOrigin
       }
 
-      child.stderr?.on('data', onData)
-      child.stdout?.on('data', onData)
+      finish(
+        NextResponse.json({
+          ok: true,
+          running: true,
+          url,
+          pid: child.pid,
+          binarySource: binary.source,
+          autoDownloadSupported: Boolean(getCloudflaredDownload()),
+          ...getPublicOriginAdvice(),
+        }),
+      )
+    }
 
-      child.on('error', (err) => {
-        clearTimeout(timeout)
-        resolve(NextResponse.json({ error: `启动失败：${err.message}` }, { status: 500 }))
-      })
+    child.stderr?.on('data', onData)
+    child.stdout?.on('data', onData)
 
-      child.on('exit', (code) => {
-        try { fs.unlinkSync(PID_FILE) } catch {}
-        if (!urlFound) {
-          clearTimeout(timeout)
-          resolve(NextResponse.json({ error: `cloudflared 退出，code=${code}` }, { status: 500 }))
-        }
-      })
+    child.on('error', (error) => {
+      clearPidFile()
+      finish(NextResponse.json({ error: `cloudflared failed to start: ${error.message}` }, { status: 500 }))
     })
-  }
 
-  return NextResponse.json({ error: '未知操作' }, { status: 400 })
+    child.on('exit', (code) => {
+      clearPidFile()
+      if (!settled) {
+        finish(NextResponse.json({ error: `cloudflared exited early: code=${code}` }, { status: 500 }))
+      }
+    })
+  })
 }

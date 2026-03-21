@@ -1,6 +1,28 @@
 # Current Snapshot
 
-Updated: 2026-03-21 00:10 CST
+Updated: 2026-03-21 14:35 CST
+
+## Latest Update
+
+- Current Goal:
+  - 接入粉笔 PDF 真题导入，统一真题年份/省份/场次归类，并把错题/心得沉淀到 AI 知识层。
+- What Changed:
+  - 新增 [src/lib/parsers/pdf-parser.ts](/E:/IdeaProject/git/error_manage/src/lib/parsers/pdf-parser.ts)，PDF 与 DOCX 解析链正式拆开。
+  - 新增 [src/lib/paper-source.ts](/E:/IdeaProject/git/error_manage/src/lib/paper-source.ts)，统一年份、省份、考试类型、专业方向和标题归一化。
+  - 重写 [src/lib/papers.ts](/E:/IdeaProject/git/error_manage/src/lib/papers.ts)，真题列表/详情改按归一化 key 聚合。
+  - 新增 [src/lib/knowledge-evolution.ts](/E:/IdeaProject/git/error_manage/src/lib/knowledge-evolution.ts)，把心得/错题诊断沉淀到 `knowledge_entries`，默认私有，可显式公开。
+  - 更新 [src/app/api/import/upload/route.ts](/E:/IdeaProject/git/error_manage/src/app/api/import/upload/route.ts)、[src/app/(app)/import/page.tsx](/E:/IdeaProject/git/error_manage/src/app/(app)/import/page.tsx)、[src/app/api/insights/route.ts](/E:/IdeaProject/git/error_manage/src/app/api/insights/route.ts)、[src/app/api/notes/route.ts](/E:/IdeaProject/git/error_manage/src/app/api/notes/route.ts)、[src/app/api/errors/[id]/diagnose/route.ts](/E:/IdeaProject/git/error_manage/src/app/api/errors/[id]/diagnose/route.ts)。
+- What Is Done:
+  - 实样本 `2025年广东省考试录用公务员《行政执法专业》试卷（考生回忆版）.pdf` 已验证可切出 `50` 题。
+  - 文件名元数据已可识别 `2025 / 广东 / 省考 / 行政执法专业`。
+  - 后端 smoke 本轮通过：`npm run typecheck`、`npm run build`、`npm run test:backend`、`npm run smoke:backend`。
+- What Is Still Open:
+  - 这轮没有跑前端 `smoke:frontend`，因为你之前明确要求不装 Playwright 浏览器。
+  - PDF 目前优先支持文字版粉笔/回忆卷；扫描版仍应走 OCR。
+- Next 3 Actions:
+  1. 把 PDF/DOCX 双入口的用户文案和 README 再收一轮。
+  2. 给“公开知识”补前端显式开关，而不是只停留在 API 参数。
+  3. 继续补 PDF 场景的导入确认/E2E 验证。
 
 ## Current Goal
 

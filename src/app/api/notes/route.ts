@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { evolveKnowledgeFromText } from '@/lib/knowledge-evolution'
 import { z } from 'zod'
 
 const schema = z.object({
@@ -14,6 +15,7 @@ const schema = z.object({
   module3:   z.string().default(''),
   sourceErrorIds: z.string().default(''),
   isPrivate: z.boolean().default(false),
+  knowledgeVisibility: z.enum(['private', 'public', 'off']).default('private'),
 })
 
 function normalizeComparableText(value: string) {
@@ -96,10 +98,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ...duplicate, deduped: true })
   }
 
+  const { knowledgeVisibility: _knowledgeVisibility, ...noteData } = parsed.data
+
   const note = await prisma.userNote.create({
     data: {
       userId,
-      ...parsed.data,
+      ...noteData,
       title: normalizedTitle,
       content: normalizedContent,
       subtype: normalizedSubtype,
@@ -108,7 +112,19 @@ export async function POST(req: NextRequest) {
       sourceErrorIds: normalizedSourceErrorIds,
     },
   })
-  return NextResponse.json(note, { status: 201 })
+
+  const evolvedKnowledge = await evolveKnowledgeFromText({
+    userId,
+    title: normalizedTitle,
+    content: normalizedContent,
+    questionType: normalizedSubtype || parsed.data.type || '心得体会',
+    visibility: parsed.data.knowledgeVisibility,
+    sourceErrorIds: normalizedSourceErrorIds,
+  })
+  return NextResponse.json({
+    ...note,
+    knowledgeEntryId: evolvedKnowledge?.id ?? null,
+  }, { status: 201 })
 }
 
 export async function PUT(req: NextRequest) {

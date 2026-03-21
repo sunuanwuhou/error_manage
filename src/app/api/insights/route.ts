@@ -4,6 +4,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { upsertKnowledgeNoteFromInsight } from '@/lib/knowledge-notes'
+import { evolveKnowledgeFromText } from '@/lib/knowledge-evolution'
 import { z } from 'zod'
 
 const schema = z.object({
@@ -13,6 +14,7 @@ const schema = z.object({
   finalContent:   z.string().min(1),
   sourceErrorIds: z.string().default(''),
   domainExamples: z.string().default(''),
+  knowledgeVisibility: z.enum(['private', 'public', 'off']).default('private'),
 })
 
 function normalizeComparableText(value: string) {
@@ -122,14 +124,31 @@ export async function POST(req: NextRequest) {
     domainExamples: normalizedDomainExamples,
   })
 
+  const evolvedKnowledge = await evolveKnowledgeFromText({
+    userId,
+    title: normalizedSkillTag || '规律沉淀',
+    content: normalizedFinalContent,
+    questionType: '规律复盘',
+    visibility: parsed.data.knowledgeVisibility,
+    sourceErrorIds: normalizedSourceErrorIds,
+    examples: normalizedDomainExamples,
+  })
+
   if (duplicate) {
-    return NextResponse.json({ ...duplicate, deduped: true, knowledgeNoteId: knowledgeNote.id })
+    return NextResponse.json({
+      ...duplicate,
+      deduped: true,
+      knowledgeNoteId: knowledgeNote.id,
+      knowledgeEntryId: evolvedKnowledge?.id ?? null,
+    })
   }
+
+  const { knowledgeVisibility: _knowledgeVisibility, ...insightData } = parsed.data
 
   const insight = await prisma.userInsight.create({
     data: {
       userId,
-      ...parsed.data,
+      ...insightData,
       skillTag: normalizedSkillTag,
       finalContent: normalizedFinalContent,
       sourceErrorIds: normalizedSourceErrorIds,
@@ -137,7 +156,11 @@ export async function POST(req: NextRequest) {
     },
   })
 
-  return NextResponse.json({ ...insight, knowledgeNoteId: knowledgeNote.id }, { status: 201 })
+  return NextResponse.json({
+    ...insight,
+    knowledgeNoteId: knowledgeNote.id,
+    knowledgeEntryId: evolvedKnowledge?.id ?? null,
+  }, { status: 201 })
 }
 
 export async function PUT(req: NextRequest) {

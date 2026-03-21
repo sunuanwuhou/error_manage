@@ -6,6 +6,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { callAIJson } from '@/lib/ai/provider'
+import { evolveKnowledgeFromText } from '@/lib/knowledge-evolution'
 
 function buildFallbackDiagnosis(userError: {
   myAnswer: string
@@ -94,6 +95,14 @@ AI之前的诊断：${userError.aiRootReason ?? '无'}
       where: { id: params.id },
       data:  { customAiAnalysis: fullAnalysis },
     })
+    await evolveKnowledgeFromText({
+      userId,
+      title: `${q.type}${q.subtype ? `-${q.subtype}` : ''}错题复盘`,
+      content: fullAnalysis,
+      questionType: q.type || '错题复盘',
+      visibility: 'private',
+      sourceErrorIds: params.id,
+    }).catch(() => {})
 
     return NextResponse.json({ analysis: fullAnalysis })
   } catch (err: any) {
@@ -104,6 +113,14 @@ AI之前的诊断：${userError.aiRootReason ?? '无'}
       where: { id: params.id },
       data:  { customAiAnalysis: fullAnalysis },
     })
+    await evolveKnowledgeFromText({
+      userId,
+      title: `${q.type}${q.subtype ? `-${q.subtype}` : ''}错题复盘`,
+      content: fullAnalysis,
+      questionType: q.type || '错题复盘',
+      visibility: 'private',
+      sourceErrorIds: params.id,
+    }).catch(() => {})
     return NextResponse.json({
       analysis: fullAnalysis,
       degraded: true,

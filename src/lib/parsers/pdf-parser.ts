@@ -1,194 +1,269 @@
-// src/lib/parsers/pdf-parser.ts
-// ============================================================
-// PDF 真题解析器
-// 支持格式：粉笔 / 华图 / 中公 / 标准四选一格式
-// ============================================================
+import pdf from 'pdf-parse'
 
 export interface ParsedQuestion {
-  no:       string      // 题号
-  content:  string      // 题目正文
-  questionImage?: string // 题目图片（如有）
-  options:  string[]    // ["A.xxx", "B.xxx", "C.xxx", "D.xxx"]
-  answer:   string      // 正确答案 A/B/C/D（来自答案页，可能为空）
-  type:     string      // 推断的题型
-  analysis: string      // 解析文字（如有）
-  rawText:  string      // 原始文本，供人工核查
+  no: string
+  content: string
+  questionImage?: string
+  options: string[]
+  answer: string
+  type: string
+  analysis: string
+  rawText: string
 }
 
-// 题型推断关键词
-const TYPE_KEYWORDS: Array<{ type: string; keywords: string[] }> = [
-  { type: '判断推理', keywords: ['逻辑判断', '图形推理', '类比推理', '定义判断', '翻译推理', '削弱', '加强', '假设', '图形'] },
-  { type: '言语理解', keywords: ['言语理解', '选词填空', '阅读理解', '语句排序', '语句填入', '文段'] },
-  { type: '数量关系', keywords: ['数量关系', '数字推理', '数学运算', '解方程', '计算'] },
-  { type: '资料分析', keywords: ['资料分析', '图表', '增长率', '比重', '倍数'] },
-  { type: '常识判断', keywords: ['常识判断', '常识', '法律', '经济', '历史', '地理', '科技'] },
-]
+type SectionType = '判断题' | '单项选择题' | '多项选择题' | ''
 
-function guessType(text: string): string {
-  const t = text.slice(0, 100)
-  for (const { type, keywords } of TYPE_KEYWORDS) {
-    if (keywords.some(k => t.includes(k))) return type
+type DraftQuestion = {
+  no: string
+  stemLines: string[]
+  tailLines: string[]
+  sectionType: SectionType
+}
+
+const TYPE_JUDGE: SectionType = '判断题'
+const TYPE_SINGLE: SectionType = '单项选择题'
+const TYPE_MULTI: SectionType = '多项选择题'
+const QUESTION_NO_RE = /^(\d{1,3})\.$/
+const OPTION_MARKER_RE = /^[A-D][.、]/
+
+export async function parsePdfBuffer(buffer: Buffer): Promise<{
+  questions: ParsedQuestion[]
+  answerMap: Record<string, string>
+  warnings: string[]
+  rawText: string
+}> {
+  const data = await pdf(buffer)
+  const parsed = parsePdfText(data.text)
+  return {
+    ...parsed,
+    rawText: data.text,
   }
-  return '判断推理'  // 默认
 }
 
-// ============================================================
-// 核心解析函数
-// ============================================================
 export function parsePdfText(rawText: string): {
-  questions:  ParsedQuestion[]
-  answerMap:  Record<string, string>  // { "1": "A", "2": "C", ... }
-  warnings:   string[]
+  questions: ParsedQuestion[]
+  answerMap: Record<string, string>
+  warnings: string[]
 } {
   const warnings: string[] = []
-  const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean)
+  const lines = normalizePdfLines(rawText)
+  const answerMap = extractAnswerMap(lines)
+  const questions = extractQuestions(lines, answerMap)
 
-  // Step 1: 提取答案表（通常在文末，格式各异）
-  const answerMap = extractAnswerMap(lines, warnings)
-
-  // Step 2: 提取题目块
-  const questions = extractQuestions(lines, answerMap, warnings)
+  if (questions.length === 0) {
+    warnings.push('PDF 未解析出有效题目，若是扫描版请优先走 OCR 或截图导入。')
+  }
+  if (Object.keys(answerMap).length === 0) {
+    warnings.push('PDF 未检测到答案区，本次会先导入题干和选项，答案可在预览页补充。')
+  }
 
   return { questions, answerMap, warnings }
 }
 
-// ============================================================
-// 答案表提取
-// 支持格式：
-//   1.A  2.B  3.C  4.D
-//   1、A  2、B
-//   【答案】1A2B3C4D
-//   答案：1-A  2-B  3-C
-// ============================================================
-function extractAnswerMap(lines: string[], warnings: string[]): Record<string, string> {
-  const answerMap: Record<string, string> = {}
+function normalizePdfLines(rawText: string) {
+  const rawLines = rawText
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
 
-  // 查找答案区块（通常包含"答案"关键词或大量连续的 数字+字母 模式）
-  const answerSectionStart = lines.findIndex(l =>
-    /答案|参考答案|解析|answer/i.test(l) || /^[1-9]\d*[.、．][ABCD]/i.test(l)
-  )
+  const lines: string[] = []
 
-  const searchLines = answerSectionStart >= 0
-    ? lines.slice(answerSectionStart)
-    : lines.slice(-Math.min(80, lines.length))  // 兜底：取最后80行
+  for (const rawLine of rawLines) {
+    if (rawLine.includes('本试卷由') && rawLine.includes('页')) continue
+    if (/^20\d{2}年/.test(rawLine) && (rawLine.includes('试卷') || rawLine.includes('真题'))) continue
+    if (rawLine.includes('考生回忆版') || rawLine.includes('粉笔用户')) continue
 
-  for (const line of searchLines) {
-    // 格式1：1.A 2.B 3.C（空格分隔）
-    const pattern1 = line.matchAll(/(\d+)[.、．\-\s]([ABCD])/gi)
-    for (const m of pattern1) {
-      answerMap[m[1]] = m[2].toUpperCase()
+    const sectionType = detectSectionType(rawLine)
+    if (sectionType) {
+      lines.push(sectionType)
+      continue
     }
 
-    // 格式2：连续无分隔 1A2B3C4D
-    const pattern2 = line.match(/^(\d+[ABCD])+$/)
-    if (pattern2) {
-      const pairs = line.matchAll(/(\d+)([ABCD])/gi)
-      for (const m of pairs) answerMap[m[1]] = m[2].toUpperCase()
+    const inlineQuestionNo = extractInlineQuestionNo(rawLine)
+    if (inlineQuestionNo && !OPTION_MARKER_RE.test(rawLine)) {
+      lines.push(inlineQuestionNo.stem)
+      lines.push(`${inlineQuestionNo.no}.`)
+      continue
     }
+
+    lines.push(rawLine)
   }
 
-  if (Object.keys(answerMap).length === 0) {
-    warnings.push('未检测到答案表，答案列将为空，请手动填写或从答案页补录')
+  return lines
+}
+
+function detectSectionType(line: string): SectionType {
+  if (!/^[一二三四五六七八九十]+[.、]/.test(line)) return ''
+  if (line.includes(TYPE_JUDGE)) return TYPE_JUDGE
+  if (line.includes(TYPE_SINGLE)) return TYPE_SINGLE
+  if (line.includes(TYPE_MULTI)) return TYPE_MULTI
+  return ''
+}
+
+function extractInlineQuestionNo(line: string) {
+  const match = line.match(/(\d{1,3})\.\s*$/)
+  if (!match?.[1]) return null
+
+  const marker = match[0]
+  const stem = line.slice(0, line.length - marker.length).trim()
+  if (!stem) return null
+
+  return {
+    stem,
+    no: match[1],
+  }
+}
+
+function extractAnswerMap(lines: string[]) {
+  const answerMap: Record<string, string> = {}
+  const answerStart = lines.findIndex(line => line.includes('答案') || line.includes('参考答案'))
+  const searchLines = answerStart >= 0 ? lines.slice(answerStart) : lines.slice(-60)
+
+  for (const line of searchLines) {
+    for (const match of line.matchAll(/(\d{1,3})[.、:\-\s]*([ABCD])/gi)) {
+      answerMap[match[1]] = match[2].toUpperCase()
+    }
   }
 
   return answerMap
 }
 
-// ============================================================
-// 题目块提取
-// 题目通常以 "数字." 或 "数字、" 开头
-// ============================================================
-function extractQuestions(
-  lines:     string[],
-  answerMap: Record<string, string>,
-  warnings:  string[]
-): ParsedQuestion[] {
+function extractQuestions(lines: string[], answerMap: Record<string, string>) {
   const questions: ParsedQuestion[] = []
+  let currentSectionType: SectionType = ''
+  let pendingStemLines: string[] = []
+  let active: DraftQuestion | null = null
 
-  // 找到所有题目起始行（数字开头 + 句子内容，不是纯答案行）
-  const questionStarts: Array<{ lineIdx: number; no: string }> = []
+  const flushActive = () => {
+    if (!active) return
+    const question = finalizeQuestion(active, answerMap[active.no] ?? '')
+    if (question.content.length > 5) questions.push(question)
+    active = null
+  }
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    // 题目行特征：以题号开头，后跟文字内容（不是单个字母答案）
-    const m = line.match(/^(\d{1,3})[.、．。\s](.{5,})/)
-    if (m && !/^[ABCD][.、．]/.test(m[2])) {
-      // 排除答案行（如 "1.A 判断正确"）
-      if (!/^[ABCD]$/.test(m[2].trim())) {
-        questionStarts.push({ lineIdx: i, no: m[1] })
+  for (const line of lines) {
+    const sectionType = detectSectionType(line)
+    if (sectionType) {
+      flushActive()
+      currentSectionType = sectionType
+      pendingStemLines = []
+      continue
+    }
+
+    const questionNo = line.match(QUESTION_NO_RE)?.[1]
+    if (questionNo) {
+      flushActive()
+      active = {
+        no: questionNo,
+        stemLines: pendingStemLines,
+        tailLines: [],
+        sectionType: currentSectionType,
       }
+      pendingStemLines = []
+      continue
     }
-  }
 
-  if (questionStarts.length === 0) {
-    warnings.push('未检测到题目，可能是扫描版PDF（图片），建议使用截图识别功能')
-    return []
-  }
-
-  // 逐题提取
-  for (let qi = 0; qi < questionStarts.length; qi++) {
-    const { lineIdx, no } = questionStarts[qi]
-    const nextStart = questionStarts[qi + 1]?.lineIdx ?? lines.length
-
-    const block = lines.slice(lineIdx, nextStart)
-    const question = parseQuestionBlock(block, no, answerMap[no] ?? '')
-    if (question.content.length > 5) {
-      questions.push(question)
+    const nextQuestion = extractInlineQuestionNo(line)
+    if (active && nextQuestion && !OPTION_MARKER_RE.test(line)) {
+      flushActive()
+      active = {
+        no: nextQuestion.no,
+        stemLines: [nextQuestion.stem],
+        tailLines: [],
+        sectionType: currentSectionType,
+      }
+      pendingStemLines = []
+      continue
     }
+
+    if (!active) {
+      pendingStemLines.push(line)
+      continue
+    }
+
+    if (isTailLine(line, active.tailLines)) {
+      active.tailLines.push(line)
+      continue
+    }
+
+    pendingStemLines.push(line)
   }
 
+  flushActive()
   return questions
 }
 
-function parseQuestionBlock(
-  block:    string[],
-  no:       string,
-  answer:   string
-): ParsedQuestion {
-  const rawText = block.join('\n')
-  const options: string[] = []
-  const contentLines: string[] = []
-  const analysisLines: string[] = []
+function isTailLine(line: string, tailLines: string[]) {
+  if (OPTION_MARKER_RE.test(line)) return true
+  if (line.startsWith('答案：') || line.startsWith('解析：')) return true
+  if (tailLines.length === 0) return false
 
-  let inAnalysis = false
+  const previous = tailLines[tailLines.length - 1] ?? ''
+  if (!OPTION_MARKER_RE.test(previous)) return false
+  if (tailLines.some(item => item.startsWith('D.') || item.includes('D.'))) return false
+  if (looksLikeQuestionStem(line)) return false
+  return true
+}
 
-  for (const line of block) {
-    // 选项行：A. / A、 / （A）
-    if (/^[ABCD][.、．\uff0e\uff01]/.test(line) || /^（[ABCD]）/.test(line)) {
-      const letter = line.match(/[ABCD]/)?.[0] ?? ''
-      const text   = line.replace(/^[（]?[ABCD][）]?[.、．\uff0e\uff01\s]*/, '').trim()
-      if (letter && text) options.push(`${letter}.${text}`)
-      continue
-    }
+function looksLikeQuestionStem(line: string) {
+  if (!line) return false
+  if (line.includes('（ ）') || line.includes('( )')) return true
+  if (line.includes('下列') || line.includes('根据') || line.includes('关于')) return true
+  if (/[。？！?]$/.test(line)) return true
+  return false
+}
 
-    // 解析行
-    if (/^(解析|【解析】|答案解析|\[解析\])/.test(line)) {
-      inAnalysis = true
-      analysisLines.push(line.replace(/^(解析|【解析】|答案解析|\[解析\])[:：]?/, '').trim())
-      continue
-    }
-
-    if (inAnalysis) {
-      analysisLines.push(line)
-    } else {
-      // 题目正文（去掉题号前缀）
-      const stripped = line.replace(/^\d{1,3}[.、．。\s]+/, '').trim()
-      if (stripped && !stripped.match(/^答案[:：]?\s*[ABCD]/)) {
-        contentLines.push(stripped)
-      }
-    }
-  }
-
-  const content  = contentLines.join(' ').trim()
-  const analysis = analysisLines.join(' ').trim()
+function finalizeQuestion(draft: DraftQuestion, answer: string): ParsedQuestion {
+  const content = sanitizeQuestionText(draft.stemLines.join(' '))
+  const optionText = draft.tailLines.join('\n')
+  const options = extractOptions(optionText)
+  const analysis = extractAnalysis(optionText)
 
   return {
-    no,
+    no: draft.no,
     content,
+    questionImage: '',
     options,
     answer,
-    type:     guessType(content),
+    type: inferQuestionType(content, draft.sectionType, options),
     analysis,
-    rawText,
+    rawText: [...draft.stemLines, `${draft.no}.`, ...draft.tailLines].join('\n'),
   }
+}
+
+function sanitizeQuestionText(text: string) {
+  const normalized = text
+    .replace(/\s+/g, ' ')
+    .replace(/^[（(](判断题|单项选择题|多项选择题)[）)]/, '')
+    .trim()
+  const explicitStem = normalized.match(/[（(](判断题|单项选择题|多项选择题)[）)].+$/)
+  return explicitStem?.[0] ?? normalized
+}
+
+function extractOptions(optionText: string) {
+  if (!optionText.trim()) return []
+
+  return optionText
+    .replace(/\n+/g, ' ')
+    .split(/(?=[A-D][.、])/)
+    .map(item => item.trim())
+    .filter(item => OPTION_MARKER_RE.test(item))
+    .map(item => {
+      const letter = item[0]
+      const text = item.slice(2).trim().replace(/\s+/g, ' ')
+      return `${letter}.${text}`
+    })
+}
+
+function extractAnalysis(optionText: string) {
+  const match = optionText.match(/(?:答案解析|解析|答案)[:：]\s*([\s\S]+)$/)
+  return match?.[1]?.trim() ?? ''
+}
+
+function inferQuestionType(content: string, sectionType: SectionType, options: string[]) {
+  if (sectionType) return sectionType
+  if (content.includes('资料') || content.includes('图表')) return '资料分析'
+  if (options.length >= 4) return TYPE_SINGLE
+  return TYPE_JUDGE
 }

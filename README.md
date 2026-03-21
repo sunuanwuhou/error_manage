@@ -61,12 +61,22 @@ npm run dev
 # 1. 安装 Playwright 浏览器
 npm run test:e2e:install
 
-# 2. 跑冒烟测试
-npm run test:e2e
+# 2. 跑前端冒烟
+npm run smoke:frontend
 
 # 可选：复用已有服务
 PLAYWRIGHT_BASE_URL=http://127.0.0.1:3000 npm run test:e2e
 ```
+
+默认策略：
+
+- Windows：`npm run smoke:frontend` 默认走 Docker 挂载开发，等价于 `npm run smoke:frontend:docker`
+- macOS：`npm run smoke:frontend` 默认走本地进程开发，等价于 `npm run smoke:frontend:local`
+- 两种模式都会优先把 E2E 数据库切到本机 `127.0.0.1:5432/wrongquestion`
+- 若你的本机数据库账号不是 `postgres/postgres`，请显式设置 `E2E_DATABASE_URL` 和 `E2E_DIRECT_URL`
+- 如果暂时不想安装 Playwright 浏览器，可先只跑环境准备：
+  - Windows: `npm run smoke:frontend:prepare:docker`
+  - macOS: `npm run smoke:frontend:prepare:local`
 
 测试文件统一放在 `tests/e2e/`，当前先提供登录页和根路由的最小烟雾覆盖，后续主流程测试由并行 agent 继续补充。
 
@@ -94,7 +104,7 @@ npm run dev
 补充说明：
 - 如果机器上没有安装 `cloudflared`，项目会在支持平台上自动下载官方二进制到 `.runtime/cloudflared/`
 - 这个地址是临时的，每次重启都可能变化，只适合测试
-- 如果需要“外网打开后还能正常登录”，请把 `.env.local` 里的 `NEXTAUTH_URL` 改成当前 Tunnel 地址后重启 `npm run dev`
+- Tunnel 启动后，项目会把当前外网地址写入 `.runtime/public-origin.txt`，认证回调会优先跟随这个地址
 - 若想手动安装，Mac 仍推荐：`brew install cloudflared`
 
 ### Docker 开发挂载 + 自动 Tunnel
@@ -115,6 +125,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 - 登录页顶部的“当前外网地址”
 - `.runtime/tunnel-url.txt`
+- `.runtime/public-origin.txt`
 
 调试 tunnel：
 
@@ -198,3 +209,20 @@ pg_dump wrongquestion > backup_$(date +%Y%m%d).sql
 # 自动（crontab -e）：
 # 0 3 * * * pg_dump wrongquestion > ~/wq_$(date +\%Y\%m\%d).sql
 ```
+
+## Codex 定时分析
+
+仓库已经有项目侧编排入口，不需要依赖 IDEA 插件自己做后台定时器：
+
+```bash
+npm run analysis:autopilot -- --task=user_strategy_refresh --interval-hours=0
+```
+
+Windows 下可以直接用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run-analysis-autopilot.ps1
+powershell -ExecutionPolicy Bypass -File scripts/register-analysis-autopilot-task.ps1 -EveryMinutes 30
+```
+
+能做到的是“项目数据定时分析”；做不到的是“让 IDEA 的 Codex 面板自己脱离项目协议常驻后台跑任务”。

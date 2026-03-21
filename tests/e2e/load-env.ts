@@ -31,4 +31,35 @@ export function loadProjectEnv() {
   const projectRoot = path.resolve(__dirname, '../..')
   parseEnvFile(path.join(projectRoot, '.env.local'))
   parseEnvFile(path.join(projectRoot, '.env'))
+
+  const defaultLocalDbUrl =
+    process.env.E2E_DATABASE_URL ??
+    process.env.DATABASE_URL_LOCAL ??
+    'postgresql://postgres:postgres@127.0.0.1:5432/wrongquestion'
+  const defaultLocalDirectUrl =
+    process.env.E2E_DIRECT_URL ??
+    process.env.DIRECT_URL_LOCAL ??
+    defaultLocalDbUrl
+
+  if (process.env.E2E_DATABASE_URL) {
+    process.env.DATABASE_URL = process.env.E2E_DATABASE_URL
+  } else if (
+    (process.platform === 'win32' || process.platform === 'darwin') &&
+    (!process.env.DATABASE_URL || process.env.DATABASE_URL.includes('supabase.co'))
+  ) {
+    process.env.DATABASE_URL = defaultLocalDbUrl
+  }
+
+  if (process.env.E2E_DIRECT_URL) {
+    process.env.DIRECT_URL = process.env.E2E_DIRECT_URL
+  } else if (
+    (process.platform === 'win32' || process.platform === 'darwin') &&
+    (!process.env.DIRECT_URL || process.env.DIRECT_URL.includes('supabase.co'))
+  ) {
+    process.env.DIRECT_URL = defaultLocalDirectUrl
+  }
+
+  if (process.platform === 'win32' && !process.env.PLAYWRIGHT_BASE_URL) {
+    process.env.PLAYWRIGHT_BASE_URL = 'http://127.0.0.1:3000'
+  }
 }

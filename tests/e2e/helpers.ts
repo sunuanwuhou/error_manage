@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import type { Page } from '@playwright/test'
+import fs from 'node:fs'
 
 const ADMIN_CREDENTIALS = {
   username: process.env.E2E_USERNAME ?? 'admin',
@@ -144,4 +145,8 @@ export async function cleanupImportedSession(
   await prisma.analysisQueue.deleteMany({ where: { targetId: { in: skillTags } } })
   await prisma.examTopicStats.deleteMany({ where: { skillTag: { in: skillTags } } })
   await prisma.question.deleteMany({ where: { id: { in: questionIds } } })
+}
+
+export function resolveExistingFixturePath(candidates: string[]) {
+  return candidates.find(candidate => fs.existsSync(candidate)) ?? null
 }

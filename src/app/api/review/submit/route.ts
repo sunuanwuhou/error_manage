@@ -336,6 +336,7 @@ async function handlePracticeSubmit(
     const existing = await prisma.userError.findUnique({
       where: { userId_questionId: { userId, questionId } },
     })
+    let userErrorId = existing?.id ?? null
     if (!existing) {
       await prisma.userError.create({
         data: {
@@ -356,6 +357,7 @@ async function handlePracticeSubmit(
         where: { userId_questionId: { userId, questionId } },
         select: { id: true },
       })
+      userErrorId = created?.id ?? null
 
       if (created) {
         attachErrorToKnowledgeNote({
@@ -399,6 +401,7 @@ async function handlePracticeSubmit(
     return NextResponse.json({
       success:          true,
       addedToErrorBook: true,
+      userErrorId,
       masteryPercent:   0,
       isStockified:     false,
       resultMatrix:     '4',
