@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client'
 import type { Page } from '@playwright/test'
 import fs from 'node:fs'
+import bcrypt from 'bcryptjs'
 
 const ADMIN_CREDENTIALS = {
   username: process.env.E2E_USERNAME ?? 'admin',
@@ -11,36 +12,47 @@ export function createPrismaClient() {
   return new PrismaClient()
 }
 
-export async function resetAdminOnboardingState(prisma: PrismaClient) {
-  await prisma.user.update({
-    where: { username: 'admin' },
-    data: {
+async function ensureAdminUser(prisma: PrismaClient, onboardingCompleted: boolean) {
+  const passwordHash = await bcrypt.hash(ADMIN_CREDENTIALS.password, 10)
+  const now = new Date()
+  const passwordExpireAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+
+  await prisma.user.upsert({
+    where: { username: ADMIN_CREDENTIALS.username },
+    update: {
+      passwordHash,
+      role: 'admin',
       examType: 'guo_kao',
       targetScore: 85,
       dailyGoal: 70,
       targetProvince: null,
       examDate: null,
-      onboardingCompletedAt: null,
+      onboardingCompletedAt: onboardingCompleted ? now : null,
       isActive: true,
-      passwordExpireAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+      passwordExpireAt,
+    },
+    create: {
+      username: ADMIN_CREDENTIALS.username,
+      passwordHash,
+      role: 'admin',
+      examType: 'guo_kao',
+      targetScore: 85,
+      dailyGoal: 70,
+      targetProvince: null,
+      examDate: null,
+      onboardingCompletedAt: onboardingCompleted ? now : null,
+      isActive: true,
+      passwordExpireAt,
     },
   })
 }
 
+export async function resetAdminOnboardingState(prisma: PrismaClient) {
+  await ensureAdminUser(prisma, false)
+}
+
 export async function prepareAdminBaseline(prisma: PrismaClient) {
-  await prisma.user.update({
-    where: { username: 'admin' },
-    data: {
-      examType: 'guo_kao',
-      targetScore: 85,
-      dailyGoal: 70,
-      targetProvince: null,
-      examDate: null,
-      onboardingCompletedAt: new Date(),
-      isActive: true,
-      passwordExpireAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-    },
-  })
+  await ensureAdminUser(prisma, true)
 }
 
 export async function signInAndNormalize(page: Page) {

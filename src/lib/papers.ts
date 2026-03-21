@@ -22,7 +22,7 @@ export interface PaperListItem extends PaperMeta {
 }
 
 export interface PaperQuestionItem {
-  userErrorId: null
+  userErrorId: string | null
   questionId: string
   masteryPercent: number
   reviewCount: number

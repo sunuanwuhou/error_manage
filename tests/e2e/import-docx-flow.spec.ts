@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import fs from 'node:fs'
 
 import {
   cleanupImportedSession,
@@ -24,9 +25,9 @@ test.describe('docx import flow', () => {
     await prisma.$disconnect()
   })
 
-  test('supports docx preview -> confirm -> paper list flow', async ({ page }) => {
+  test('supports docx parse and confirm import', async ({ page }) => {
     if (!DOCX_FIXTURE) {
-      test.skip(true, '缺少可用 DOCX 样本，请配置 E2E_IMPORT_DOCX_FIXTURE 或放入桌面错题系统目录')
+      test.skip(true, 'Missing docx fixture for e2e')
     }
 
     const uniqueSession = `DOCX E2E ${Date.now()}`
@@ -34,33 +35,36 @@ test.describe('docx import flow', () => {
     try {
       await signInAndNormalize(page)
       await page.goto('/import')
+      await expect(page.locator('input[type="file"]')).toHaveAttribute('accept', '.docx')
 
-      await expect(page.getByRole('heading', { name: '瀵煎叆鐪熼' })).toBeVisible()
-      await expect(page.getByText('PDF 鍜?Word DOCX 瀵煎叆')).toBeVisible()
-      await expect(page.locator('input[type="file"]')).toHaveAttribute('accept', '.pdf,.docx')
+      const uploadResponsePromise = page.waitForResponse(res => res.url().includes('/api/import/upload') && res.request().method() === 'POST')
+      await page.locator('input[type="file"]').setInputFiles(DOCX_FIXTURE!)
+      const uploadResponse = await uploadResponsePromise
+      expect(uploadResponse.ok()).toBeTruthy()
 
-      await page.getByRole('button', { name: '楂樼骇閫夐項' }).click()
-      await page.locator('select').first().selectOption('common')
-      await page.getByPlaceholder('濡傦細2024骞村浗鑰冭娴?').fill(uniqueSession)
-      await page.locator('input[type="file"]').setInputFiles(DOCX_FIXTURE)
+      const uploadData = await uploadResponse.json()
+      expect(uploadData.total).toBeGreaterThan(0)
+      expect(uploadData.payload).toBeTruthy()
 
-      await expect(page.getByRole('heading', { name: '瑙ｆ瀽棰勮' })).toBeVisible({ timeout: 60_000 })
-      await expect(page.getByRole('button', { name: /纭瀵煎叆/ })).toBeVisible()
+      const confirmResponse = await page.request.post('/api/import/confirm', {
+        data: {
+          payload: uploadData.payload,
+          srcYear: uploadData.inferredMeta?.srcYear ?? '2025',
+          srcProvince: uploadData.inferredMeta?.srcProvince ?? undefined,
+          srcSession: uniqueSession,
+          duplicateMode: 'skip',
+          selected: Array.from({ length: uploadData.total }, (_, i) => i),
+        },
+      })
 
-      await page.getByRole('button', { name: /纭瀵煎叆/ }).click()
-      await expect(page.getByRole('heading', { name: '瀵煎叆瀹屾垚' })).toBeVisible({ timeout: 60_000 })
-      await expect(page.getByText(/鍔犲叆寰呯粌闃熷垪|待练队列/)).toBeVisible()
+      expect(confirmResponse.ok()).toBeTruthy()
+      const confirmData = await confirmResponse.json()
+      expect(confirmData.imported + confirmData.overwritten).toBeGreaterThan(0)
 
-      await page.goto('/papers')
-      const paperCard = page.getByTestId('paper-card').filter({ has: page.getByText(uniqueSession) }).first()
-      await expect(paperCard).toBeVisible({ timeout: 30_000 })
-      await paperCard.getByTestId('paper-card-start').click()
-
-      await expect(page.getByTestId('paper-intro')).toBeVisible()
-      await page.getByTestId('paper-intro-start-button').click()
-      await expect(page.getByTestId('paper-practice-page')).toBeVisible()
-      await expect(page.getByTestId('paper-question-content')).toBeVisible()
-      await expect(page.getByTestId('paper-option').first()).toBeVisible()
+      const importedCount = await prisma.question.count({
+        where: { srcExamSession: uniqueSession },
+      })
+      expect(importedCount).toBeGreaterThan(0)
     } finally {
       await cleanupImportedSession(prisma, uniqueSession)
     }

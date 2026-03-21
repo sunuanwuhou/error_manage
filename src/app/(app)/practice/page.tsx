@@ -682,6 +682,47 @@ export default function PracticePage() {
     } finally { setVerifying(false) }
   }
 
+  async function handleCustomDiagnosis() {
+    const targetUserErrorId = current?.userErrorId ?? submitResult?.userErrorId
+    if (!targetUserErrorId) return
+
+    setDiagnosing(true)
+    try {
+      const res = await fetch(`/api/errors/${targetUserErrorId}/diagnose`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'AI diagnosis failed')
+      if (!data.analysis) return
+
+      setCustomAnalysis(data.analysis)
+      setAiNotice(data.message ?? '')
+
+      if (paper) {
+        setPaperAnswers(prev => ({
+          ...prev,
+          [idx]: {
+            selected: prev[idx]?.selected ?? selected ?? '',
+            submitResult: prev[idx]?.submitResult ?? submitResult,
+            timeSpentSeconds: prev[idx]?.timeSpentSeconds ?? 0,
+            customAnalysis: data.analysis,
+          },
+        }))
+      } else {
+        setRegularAnswers(prev => ({
+          ...prev,
+          [idx]: {
+            selected: prev[idx]?.selected ?? selected ?? '',
+            submitResult: prev[idx]?.submitResult ?? submitResult,
+            customAnalysis: data.analysis,
+          },
+        }))
+      }
+    } catch (error: any) {
+      setAiNotice(error?.message ?? 'AI diagnosis failed')
+    } finally {
+      setDiagnosing(false)
+    }
+  }
+
   const handleReveal = useCallback(async (answer: string | null, tv: ThinkingVerdict | null, timeSpent: number) => {
     if (!current) return
     setLoading(true)
@@ -1824,38 +1865,22 @@ export default function PracticePage() {
           )}
 
           {/* O4: AI 行动规则展示 */}
-          {!isPaperMode && current.aiActionRule && (
+          {(current.aiActionRule || submitResult?.userErrorId) && (
             <div className="bg-blue-50 border border-blue-100 rounded-xl p-3">
               <p className="text-xs text-blue-500 font-medium mb-1">📌 下次遇到类似题</p>
-              <p className="text-sm text-blue-800 font-medium">{current.aiActionRule}</p>
+              <p className="text-sm text-blue-800 font-medium">
+                {current.aiActionRule || '这道题答错后已进入错题沉淀链路，可以继续触发个性化诊断。'}
+              </p>
             </div>
           )}
 
           {/* B7: 个性化AI诊断按钮 */}
-          {!isPaperMode && !customAnalysis ? (
-            <button onClick={async () => {
-              setDiagnosing(true)
-              try {
-                const res = await fetch(`/api/errors/${current.userErrorId}/diagnose`, { method: 'POST' })
-                const d   = await res.json()
-                if (d.analysis) {
-                  setCustomAnalysis(d.analysis)
-                  setAiNotice(d.message ?? '')
-                  setRegularAnswers(prev => ({
-                    ...prev,
-                    [idx]: {
-                      selected: prev[idx]?.selected ?? selected ?? '',
-                      submitResult: prev[idx]?.submitResult ?? submitResult,
-                      customAnalysis: d.analysis,
-                    },
-                  }))
-                }
-              } finally { setDiagnosing(false) }
-            }} disabled={diagnosing}
+          {(current.userErrorId || submitResult?.userErrorId) && !customAnalysis ? (
+            <button onClick={handleCustomDiagnosis} disabled={diagnosing}
               className="w-full py-2.5 border border-purple-200 text-purple-600 rounded-xl text-sm font-medium hover:bg-purple-50 disabled:opacity-50">
               {diagnosing ? '🤖 深度诊断中...' : '🔬 个性化深度诊断'}
             </button>
-          ) : (
+          ) : customAnalysis ? (
             <div className="bg-purple-50 border border-purple-200 rounded-xl p-3">
               <p className="text-xs text-purple-500 font-medium mb-1">🔬 个性化诊断</p>
               {aiNotice && (
@@ -1863,7 +1888,7 @@ export default function PracticePage() {
               )}
               <p className="text-sm text-purple-800 whitespace-pre-wrap leading-relaxed">{customAnalysis}</p>
             </div>
-          )}
+          ) : null}
 
           {!isPaperMode && (
             <div className="grid grid-cols-2 gap-3">
@@ -1884,7 +1909,7 @@ export default function PracticePage() {
             </div>
           )}
 
-          {!isPaperMode && (current.question.analysis || current.question.sharedAiAnalysis) && (
+          {(current.question.analysis || current.question.sharedAiAnalysis) && (
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
               <p className="text-xs font-medium text-gray-500 mb-2">解析</p>
               <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
@@ -1896,7 +1921,7 @@ export default function PracticePage() {
       )}
 
       {/* B7: 个性化AI诊断按钮（答错时显示）*/}
-      {step === 'revealed' && !isPaperMode && mode === 'deep' && selected !== current?.question?.answer && (
+      {false && step === 'revealed' && !isPaperMode && mode === 'deep' && selected !== current?.question?.answer && (
         <CustomDiagnosisButton
           questionContent={current.question.content}
           correctAnswer={current.question.answer}

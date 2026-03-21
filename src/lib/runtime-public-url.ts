@@ -27,6 +27,10 @@ function normalizeOrigin(value: string | null | undefined) {
   }
 }
 
+function isE2ETestMode() {
+  return process.env.PLAYWRIGHT === 'true' || process.env.E2E_TEST_MODE === '1'
+}
+
 export function getRuntimeDir() {
   return RUNTIME_DIR
 }
@@ -36,6 +40,7 @@ export function getTunnelUrlFilePath() {
 }
 
 export function readTunnelUrl() {
+  if (isE2ETestMode()) return null
   return normalizeOrigin(readTrimmedFile(TUNNEL_URL_FILE) ?? readTrimmedFile(LEGACY_TUNNEL_FILE))
 }
 
@@ -57,6 +62,7 @@ export function clearTunnelUrl() {
 }
 
 export function readRuntimePublicOrigin() {
+  if (isE2ETestMode()) return null
   return normalizeOrigin(readTrimmedFile(PUBLIC_ORIGIN_FILE))
 }
 
@@ -80,6 +86,7 @@ export function getConfiguredNextAuthOrigin() {
 }
 
 export function getEffectivePublicOrigin() {
+  if (isE2ETestMode()) return getConfiguredNextAuthOrigin()
   return readRuntimePublicOrigin() ?? readTunnelUrl() ?? getConfiguredNextAuthOrigin()
 }
 
