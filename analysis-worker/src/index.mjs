@@ -60,6 +60,20 @@ async function main() {
     return
   }
 
+  if (args.applyResult) {
+    if (!args.taskId) {
+      throw new Error('--apply-result requires --task-id')
+    }
+    const applyStatus = await applyResultFile({
+      taskId: args.taskId,
+      resultFile: args.resultFile ?? defaultResultFileForTask(args.taskId),
+    })
+    console.log(applyStatus === 'skipped'
+      ? `[analysis-worker] task ${args.taskId} already done, skip apply`
+      : `[analysis-worker] applied result for task ${args.taskId}`)
+    return
+  }
+
   if (args.exportTaskId) {
     const taskResult = await query(
       `SELECT *
@@ -77,20 +91,6 @@ async function main() {
 
   if (args.showLatest) {
     printLatestBundleInstructions()
-    return
-  }
-
-  if (args.applyResult) {
-    if (!args.taskId) {
-      throw new Error('--apply-result requires --task-id')
-    }
-    const applyStatus = await applyResultFile({
-      taskId: args.taskId,
-      resultFile: args.resultFile ?? defaultResultFileForTask(args.taskId),
-    })
-    console.log(applyStatus === 'skipped'
-      ? `[analysis-worker] task ${args.taskId} already done, skip apply`
-      : `[analysis-worker] applied result for task ${args.taskId}`)
     return
   }
 
@@ -124,7 +124,11 @@ function parseArgs(argv) {
     else if (arg.startsWith('--enqueue-user-error-id=')) values.enqueueUserErrorId = arg.slice('--enqueue-user-error-id='.length)
     else if (arg.startsWith('--task=')) values.task = arg.slice('--task='.length)
     else if (arg.startsWith('--export-task-id=')) values.exportTaskId = arg.slice('--export-task-id='.length)
-    else if (arg.startsWith('--task-id=')) values.taskId = arg.slice('--task-id='.length)
+    else if (arg.startsWith('--task-id=')) {
+      const taskId = arg.slice('--task-id='.length)
+      values.taskId = taskId
+      if (!values.exportTaskId) values.exportTaskId = taskId
+    }
     else if (arg.startsWith('--result-file=')) values.resultFile = arg.slice('--result-file='.length)
     else if (arg.startsWith('--userId=')) values.userId = arg.slice('--userId='.length)
     else if (arg.startsWith('--interval-hours=')) values.intervalHours = parseInt(arg.slice('--interval-hours='.length), 10)
@@ -454,11 +458,34 @@ async function exportUserStrategyRefreshContext(task) {
   const previous = previousResult.rows[0] ?? null
   const normalizedUser = normalizeUser(user)
   const baselineStrategy = deriveDailyTaskStrategy(normalizedUser, summary)
-  const retrievedKnowledge = await retrieveRelevantStrategyKnowledge(normalizedUser, summary, baselineStrategy)
   const diagnosisFeedbackSummary = await buildDiagnosisFeedbackSummary(user.id)
   const recentRulePerformance = await buildRecentRulePerformance(user.id)
-  const baselineFindings = buildFindings(summary, previous, retrievedKnowledge)
-  const baselineRecommendations = buildRecommendations(normalizedUser, summary, baselineStrategy, retrievedKnowledge)
+  const humanFeedbackSignals = await buildHumanFeedbackSignals(user.id)
+  const retrievedKnowledge = await retrieveRelevantStrategyKnowledge(
+    normalizedUser,
+    summary,
+    baselineStrategy,
+    diagnosisFeedbackSummary,
+    recentRulePerformance,
+    humanFeedbackSignals,
+  )
+  const baselineFindings = buildFindings(
+    summary,
+    previous,
+    retrievedKnowledge,
+    diagnosisFeedbackSummary,
+    recentRulePerformance,
+    humanFeedbackSignals,
+  )
+  const baselineRecommendations = buildRecommendations(
+    normalizedUser,
+    summary,
+    baselineStrategy,
+    retrievedKnowledge,
+    diagnosisFeedbackSummary,
+    recentRulePerformance,
+    humanFeedbackSignals,
+  )
 
   const payload = {
     protocolVersion: 1,
@@ -483,6 +510,7 @@ async function exportUserStrategyRefreshContext(task) {
     retrievedKnowledge,
     diagnosisFeedbackSummary,
     recentRulePerformance,
+    humanFeedbackSignals,
     baseline: {
       strategy: baselineStrategy,
       findings: baselineFindings,
@@ -557,6 +585,19 @@ async function exportUserErrorDiagnosisContext(task) {
   const ruleEffectiveness = await buildRuleEffectiveness(userError)
   const userProfileSignals = await buildUserProfileSignals(userError.userId, userError.type)
   const latestStrategySnapshot = await getLatestStrategySnapshot(userError.userId)
+  const humanFeedbackSummary = await buildHumanFeedbackSummary({
+    userId: userError.userId,
+    sourceType: 'user_error_diagnosis',
+    sourceId: userError.id,
+    questionType: userError.type,
+  })
+  const biasContext = buildBiasContext({
+    userError,
+    historicalPatterns,
+    ruleEffectiveness,
+    userProfileSignals,
+    humanFeedbackSummary,
+  })
 
   const payload = {
     protocolVersion: 1,
@@ -602,6 +643,8 @@ async function exportUserErrorDiagnosisContext(task) {
     historicalPatterns,
     ruleEffectiveness,
     userProfileSignals,
+    humanFeedbackSummary,
+    biasContext,
     latestStrategySnapshot,
     retrievedKnowledge,
     outputContract: buildOutputContractForType('user_error_diagnosis'),
@@ -781,11 +824,19 @@ async function applyResultFile({ taskId, resultFile }) {
   return 'applied'
 }
 
-async function retrieveRelevantStrategyKnowledge(user, summary, strategy) {
+async function retrieveRelevantStrategyKnowledge(user, summary, strategy, diagnosisFeedbackSummary = null, recentRulePerformance = [], humanFeedbackSignals = null) {
   const queryText = [
     '策略分析',
     summary.weakTypes.map((item) => item.type).join(' '),
     strategy.activationQuestionTypes.join(' '),
+    (diagnosisFeedbackSummary?.topBiases ?? []).map((item) => item.value).join(' '),
+    (diagnosisFeedbackSummary?.worstActionRules ?? []).map((item) => item.value).join(' '),
+    (humanFeedbackSignals?.confirmedBiases ?? []).map((item) => item.value).join(' '),
+    (humanFeedbackSignals?.ineffectiveRules ?? []).map((item) => item.value).join(' '),
+    recentRulePerformance
+      .filter((item) => item.effectivenessTier === 'weak' || item.effectivenessTier === 'failed')
+      .map((item) => item.ruleName)
+      .join(' '),
     `accuracy ${summary.accuracy}`,
     `due ${summary.dueReviewCount}`,
     `target ${strategy.totalTarget}`,
@@ -798,7 +849,7 @@ async function retrieveRelevantStrategyKnowledge(user, summary, strategy) {
 
   if (embedding) {
     result = await query(
-      `SELECT id, "methodName", "qualityScore", "usageCount", "rawAnalysis"
+      `SELECT id, "methodName", "qualityScore", "usageCount", "rawAnalysis", "triggerKeywords", "updatedAt"
        FROM knowledge_entries
        WHERE "questionType" = '策略分析'
          AND ("userId" = $1 OR "isPublic" = true)
@@ -811,6 +862,8 @@ async function retrieveRelevantStrategyKnowledge(user, summary, strategy) {
     const keywords = [...new Set([
       ...summary.weakTypes.map((item) => item.type),
       ...strategy.activationQuestionTypes,
+      ...(diagnosisFeedbackSummary?.topBiases ?? []).map((item) => item.value),
+      ...(diagnosisFeedbackSummary?.worstActionRules ?? []).map((item) => item.value),
       summary.dueReviewCount > 0 ? '到期错题' : null,
       '日任务',
       '复盘',
@@ -820,7 +873,7 @@ async function retrieveRelevantStrategyKnowledge(user, summary, strategy) {
     const params = [user.id, ...keywords.map((item) => `%${item}%`)]
     const whereKeyword = patterns.length > 0 ? `AND (${patterns.join(' OR ')})` : ''
     result = await query(
-      `SELECT id, "methodName", "qualityScore", "usageCount", "rawAnalysis"
+      `SELECT id, "methodName", "qualityScore", "usageCount", "rawAnalysis", "triggerKeywords", "updatedAt"
        FROM knowledge_entries
        WHERE "questionType" = '策略分析'
          AND ("userId" = $1 OR "isPublic" = true)
@@ -833,7 +886,38 @@ async function retrieveRelevantStrategyKnowledge(user, summary, strategy) {
 
   if (result.rowCount === 0) return []
 
-  const ids = result.rows.map((row) => row.id)
+  const failedRuleNames = new Set(
+    recentRulePerformance
+      .filter((item) => item.effectivenessTier === 'weak' || item.effectivenessTier === 'failed')
+      .map((item) => item.ruleName.toLowerCase())
+  )
+  const strongBiases = new Set((diagnosisFeedbackSummary?.topBiases ?? []).map((item) => item.value.toLowerCase()))
+  const confirmedBiases = new Set((humanFeedbackSignals?.confirmedBiases ?? []).map((item) => item.value.toLowerCase()))
+  const ineffectiveRules = new Set((humanFeedbackSignals?.ineffectiveRules ?? []).map((item) => item.value.toLowerCase()))
+  const reranked = result.rows
+    .map((row) => {
+      const triggerKeywords = parseStringArray(row.triggerKeywords)
+      const matchedBiases = triggerKeywords.filter((keyword) => strongBiases.has(String(keyword).toLowerCase()))
+      const matchedConfirmedBiases = triggerKeywords.filter((keyword) => confirmedBiases.has(String(keyword).toLowerCase()))
+      const strategyText = `${row.methodName ?? ''} ${row.rawAnalysis ?? ''}`.toLowerCase()
+      const weakRuleBoost = Array.from(failedRuleNames).some((rule) => strategyText.includes(rule)) ? 0.08 : 0
+      const ineffectiveRuleBoost = Array.from(ineffectiveRules).some((rule) => strategyText.includes(rule)) ? 0.1 : 0
+      const biasBoost = Math.min(matchedBiases.length * 0.05, 0.15)
+      const confirmedBiasBoost = Math.min(matchedConfirmedBiases.length * 0.06, 0.18)
+      const usageBoost = Math.min(Number(row.usageCount ?? 0) * 0.01, 0.08)
+      const score = Number(row.qualityScore ?? 0) + usageBoost + biasBoost + confirmedBiasBoost + weakRuleBoost + ineffectiveRuleBoost
+      return {
+        ...row,
+        score,
+        effectScore: Number(row.qualityScore ?? 0),
+        matchedBiases,
+        matchedConfirmedBiases,
+      }
+    })
+    .sort((a, b) => b.score - a.score || Number(b.qualityScore ?? 0) - Number(a.qualityScore ?? 0))
+    .slice(0, 3)
+
+  const ids = reranked.map((row) => row.id)
   await query(
     `UPDATE knowledge_entries
      SET "usageCount" = COALESCE("usageCount", 0) + 1,
@@ -842,12 +926,16 @@ async function retrieveRelevantStrategyKnowledge(user, summary, strategy) {
     [ids]
   )
 
-  return result.rows.map((row) => ({
+  return reranked.map((row) => ({
     id: row.id,
     methodName: row.methodName,
     qualityScore: Number(row.qualityScore),
     usageCount: Number(row.usageCount ?? 0) + 1,
     rawAnalysis: row.rawAnalysis,
+    effectScore: Number(row.effectScore ?? row.qualityScore ?? 0),
+    matchedBiases: row.matchedBiases,
+    matchedConfirmedBiases: row.matchedConfirmedBiases,
+    lastUsedAt: row.updatedAt,
   }))
 }
 
@@ -1216,9 +1304,19 @@ async function buildUserProfileSignals(userId, currentQuestionType) {
   const recentCorrect = reviewRows.filter((row) => row.isCorrect).length
   const recentTotal = reviewRows.length
   const recentSlowCorrect = reviewRows.filter((row) => row.isSlowCorrect).length
+  const highFrequencyBiases = aggregateTopCounts(
+    errorRows.map((row) => inferBiasCandidate({
+      aiReasonTag: row.reasonTag,
+      aiRootReason: '',
+      aiErrorReason: '',
+      questionType: row.type,
+    })?.label),
+    3,
+  )
 
   return {
     highFrequencyReasonTags,
+    highFrequencyBiases,
     weakQuestionTypes,
     recentMasteryTrend: weakQuestionTypes.find((item) => item.type === currentQuestionType) ?? null,
     reviewStability: {
@@ -1256,6 +1354,9 @@ async function buildDiagnosisFeedbackSummary(userId) {
   const result = await query(
     `SELECT
        COALESCE(ue."aiReasonTag", '未标注') AS "reasonTag",
+       ue."aiRootReason",
+       ue."aiErrorReason",
+       ue."customAiAnalysis",
        ue."aiActionRule",
        q.type,
        ue."reboundAlert",
@@ -1285,9 +1386,30 @@ async function buildDiagnosisFeedbackSummary(userId) {
     rows.filter((row) => row.aiActionRule && row.reboundAlert).map((row) => `${row.type}:${row.aiActionRule}`),
     3,
   )
+  const biasEntries = rows
+    .map((row) => ({
+      type: row.type,
+      bias: inferBiasCandidate({
+        aiReasonTag: row.reasonTag,
+        aiRootReason: row.aiRootReason,
+        aiErrorReason: row.aiErrorReason,
+        customAiAnalysis: row.customAiAnalysis,
+        questionType: row.type,
+      }),
+      correctCount: Number(row.correctCount ?? 0),
+    }))
+    .filter((item) => item.bias)
+  const topBiases = aggregateTopCounts(biasEntries.map((item) => item.bias.label), 5)
+  const biasByQuestionType = aggregateTopCounts(biasEntries.map((item) => `${item.type}:${item.bias.label}`), 5)
+  const biasRepeatRate = biasEntries.length > 0
+    ? Number((biasEntries.filter((item) => item.correctCount === 0).length / biasEntries.length).toFixed(2))
+    : null
 
   return {
     topReasonTags,
+    topBiases,
+    biasByQuestionType,
+    biasRepeatRate,
     repeatWrongPatterns,
     bestActionRules,
     worstActionRules,
@@ -1328,9 +1450,113 @@ async function buildRecentRulePerformance(userId) {
       followupCorrectRate: value.total > 0 ? Number((value.followupCorrect / value.total).toFixed(2)) : null,
       repeatWrongRate: value.total > 0 ? Number(((value.total - value.followupCorrect) / value.total).toFixed(2)) : null,
       questionTypes: Array.from(value.types),
+      effectivenessScore: value.total > 0
+        ? Number((((value.followupCorrect / value.total) * 0.7) + (((value.total - value.followupCorrect) / value.total) * -0.3)).toFixed(2))
+        : null,
+      effectivenessTier: classifyRuleEffectiveness(
+        value.total > 0 ? Number((value.followupCorrect / value.total).toFixed(2)) : null,
+        value.total > 0 ? Number(((value.total - value.followupCorrect) / value.total).toFixed(2)) : null,
+      ),
     }))
     .sort((a, b) => (b.issuedCount - a.issuedCount) || ((b.followupCorrectRate ?? 0) - (a.followupCorrectRate ?? 0)))
     .slice(0, 5)
+}
+
+function classifyRuleEffectiveness(followupCorrectRate, repeatWrongRate) {
+  if (followupCorrectRate == null || repeatWrongRate == null) return 'unknown'
+  if (followupCorrectRate >= 0.7 && repeatWrongRate <= 0.3) return 'strong'
+  if (followupCorrectRate >= 0.45 && repeatWrongRate <= 0.55) return 'mixed'
+  if (followupCorrectRate >= 0.25) return 'weak'
+  return 'failed'
+}
+
+async function buildHumanFeedbackSummary({ userId, sourceType, sourceId, questionType }) {
+  const result = await queryIfTableMissing(
+    `SELECT "feedbackType", "feedbackValue", comment, "createdAt"
+     FROM ai_feedback_logs
+     WHERE "userId" = $1
+       AND "sourceType" = $2
+       AND "sourceId" = $3
+     ORDER BY "createdAt" DESC
+     LIMIT 30`,
+    [userId, sourceType, sourceId],
+    { rows: [], rowCount: 0 }
+  )
+
+  const rows = result.rows ?? []
+  return {
+    questionType,
+    totalFeedback: rows.length,
+    latestFeedbackAt: rows[0]?.createdAt ?? null,
+    confirmedBiases: aggregateTopCounts(
+      rows.filter((row) => row.feedbackType === 'bias_correct').map((row) => row.feedbackValue),
+      3,
+    ),
+    rejectedBiases: aggregateTopCounts(
+      rows.filter((row) => row.feedbackType === 'bias_incorrect').map((row) => row.feedbackValue),
+      3,
+    ),
+    effectiveRules: aggregateTopCounts(
+      rows.filter((row) => row.feedbackType === 'rule_effective').map((row) => row.feedbackValue),
+      3,
+    ),
+    ineffectiveRules: aggregateTopCounts(
+      rows.filter((row) => row.feedbackType === 'rule_ineffective').map((row) => row.feedbackValue),
+      3,
+    ),
+    manualOverrides: rows
+      .filter((row) => row.feedbackType === 'manual_override')
+      .slice(0, 3)
+      .map((row) => ({
+        value: row.feedbackValue,
+        comment: row.comment,
+        createdAt: row.createdAt,
+      })),
+  }
+}
+
+async function buildHumanFeedbackSignals(userId) {
+  const result = await queryIfTableMissing(
+    `SELECT "feedbackType", "feedbackValue", comment, "analysisType", "sourceType", "createdAt"
+     FROM ai_feedback_logs
+     WHERE "userId" = $1
+     ORDER BY "createdAt" DESC
+     LIMIT 100`,
+    [userId],
+    { rows: [], rowCount: 0 }
+  )
+
+  const rows = result.rows ?? []
+  return {
+    totalFeedback: rows.length,
+    confirmedBiases: aggregateTopCounts(
+      rows.filter((row) => row.feedbackType === 'bias_correct').map((row) => row.feedbackValue),
+      5,
+    ),
+    rejectedBiases: aggregateTopCounts(
+      rows.filter((row) => row.feedbackType === 'bias_incorrect').map((row) => row.feedbackValue),
+      5,
+    ),
+    effectiveRules: aggregateTopCounts(
+      rows.filter((row) => row.feedbackType === 'rule_effective').map((row) => row.feedbackValue),
+      5,
+    ),
+    ineffectiveRules: aggregateTopCounts(
+      rows.filter((row) => row.feedbackType === 'rule_ineffective').map((row) => row.feedbackValue),
+      5,
+    ),
+    diagnosisDisputes: rows.filter((row) => row.feedbackType === 'diagnosis_incorrect').length,
+    latestManualOverrides: rows
+      .filter((row) => row.feedbackType === 'manual_override')
+      .slice(0, 5)
+      .map((row) => ({
+        value: row.feedbackValue,
+        comment: row.comment,
+        analysisType: row.analysisType,
+        sourceType: row.sourceType,
+        createdAt: row.createdAt,
+      })),
+  }
 }
 
 function aggregateTopCounts(values, limit) {
@@ -1342,6 +1568,132 @@ function aggregateTopCounts(values, limit) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
     .map(([value, count]) => ({ value, count }))
+}
+
+function buildBiasContext({ userError, historicalPatterns, ruleEffectiveness, userProfileSignals, humanFeedbackSummary = null }) {
+  const previousBias = inferBiasCandidate({
+    aiReasonTag: userError.aiReasonTag,
+    aiRootReason: userError.aiRootReason,
+    aiErrorReason: userError.aiErrorReason,
+    customAiAnalysis: userError.customAiAnalysis,
+    questionType: userError.type,
+  })
+
+  return {
+    taxonomy: [
+      '概念边界混淆',
+      '记忆锚点不稳',
+      '审题对象错位',
+      '规律识别不稳定',
+      '凭熟悉感放行',
+      '先入为主排除',
+    ],
+    previousBias,
+    likelyBiases: rankLikelyBiases({
+      userError,
+      historicalPatterns,
+      ruleEffectiveness,
+      userProfileSignals,
+      previousBias,
+      humanFeedbackSummary,
+    }),
+    humanFeedbackSummary,
+  }
+}
+
+function rankLikelyBiases({ userError, historicalPatterns, ruleEffectiveness, userProfileSignals, previousBias, humanFeedbackSummary = null }) {
+  const candidates = new Map()
+  const push = (label, reason, weight = 1) => {
+    if (!label) return
+    const current = candidates.get(label) ?? { label, score: 0, reasons: [] }
+    current.score += weight
+    current.reasons.push(reason)
+    candidates.set(label, current)
+  }
+
+  if (previousBias?.label) {
+    push(previousBias.label, 'previous_diagnosis', 2)
+  }
+
+  for (const item of historicalPatterns?.lastThreeDiagnoses ?? []) {
+    const inferred = inferBiasCandidate({
+      aiReasonTag: item.aiReasonTag,
+      aiRootReason: item.aiRootReason,
+      aiErrorReason: item.aiErrorReason,
+      questionType: item.questionType,
+    })
+    if (inferred?.label) push(inferred.label, 'recent_diagnosis', 1.5)
+  }
+
+  if (Array.isArray(userProfileSignals?.highFrequencyBiases)) {
+    for (const item of userProfileSignals.highFrequencyBiases) {
+      push(item.value, 'user_profile_bias', Math.min(item.count, 3))
+    }
+  }
+
+  for (const item of humanFeedbackSummary?.confirmedBiases ?? []) {
+    push(item.value, 'human_confirmed_bias', Math.min(item.count * 2, 4))
+  }
+
+  for (const item of humanFeedbackSummary?.rejectedBiases ?? []) {
+    if (!item?.value) continue
+    const existing = candidates.get(item.value)
+    if (existing) {
+      existing.score -= Math.min(item.count * 2, 4)
+      existing.reasons.push('human_rejected_bias')
+      candidates.set(item.value, existing)
+    }
+  }
+
+  if (ruleEffectiveness?.repeatWrongAfterRuleCount > 0) {
+    push('凭熟悉感放行', 'rule_failed_repeat_wrong', 1)
+  }
+
+  if (userError.type === '常识判断') {
+    push('概念边界混淆', 'question_type_common_sense', 0.5)
+    push('记忆锚点不稳', 'question_type_common_sense', 0.5)
+  }
+  if (userError.type === '判断推理') {
+    push('规律识别不稳定', 'question_type_reasoning', 0.8)
+  }
+  if (userError.type === '言语理解') {
+    push('审题对象错位', 'question_type_verbal', 0.6)
+  }
+
+  return Array.from(candidates.values())
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4)
+}
+
+function inferBiasCandidate({ aiReasonTag, aiRootReason, aiErrorReason, aiActionRule, customAiAnalysis, questionType }) {
+  const text = [
+    aiReasonTag,
+    aiRootReason,
+    aiErrorReason,
+    aiActionRule,
+    customAiAnalysis,
+    questionType,
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  const rules = [
+    { label: '概念边界混淆', keywords: ['概念混淆', '边界', '分类', '供给侧', '需求侧', '概念边界'] },
+    { label: '记忆锚点不稳', keywords: ['记忆锚点', '史实', '节点', '会议', '时间线', '锚点'] },
+    { label: '审题对象错位', keywords: ['审题', '对象', '问法', '条件', '指标', '主旨'] },
+    { label: '规律识别不稳定', keywords: ['规律', '规则', '图形', '推理', '方法不熟', '列规则'] },
+    { label: '凭熟悉感放行', keywords: ['熟悉感', '眼熟', '整体放行', '凭感觉', '看着都对'] },
+    { label: '先入为主排除', keywords: ['先入为主', '排除', '预判', '第一印象', '先排'] },
+  ]
+
+  for (const rule of rules) {
+    if (rule.keywords.some((keyword) => text.includes(keyword))) {
+      return rule
+    }
+  }
+
+  return null
 }
 
 function deriveDailyTaskStrategy(user, summary) {
@@ -1378,7 +1730,7 @@ function deriveDailyTaskStrategy(user, summary) {
   }
 }
 
-function buildFindings(summary, previous, retrievedKnowledge = []) {
+function buildFindings(summary, previous, retrievedKnowledge = [], diagnosisFeedbackSummary = null, recentRulePerformance = null, humanFeedbackSignals = null) {
   const findings = []
 
   if (summary.weakTypes.length > 0) {
@@ -1427,6 +1779,44 @@ function buildFindings(summary, previous, retrievedKnowledge = []) {
     })
   }
 
+  const primaryBias = diagnosisFeedbackSummary?.topBiases?.[0] ?? null
+  if (primaryBias) {
+    findings.push({
+      type: 'pattern',
+      title: `当前固定盲区偏向“${primaryBias.value}”`,
+      detail: `最近诊断里“${primaryBias.value}”出现 ${primaryBias.count} 次，说明问题不只是一两道题不会，而是存在稳定的认知偏差。`,
+      confidence: Math.min(0.9, 0.58 + primaryBias.count * 0.06),
+      trend: diagnosisFeedbackSummary?.biasRepeatRate && diagnosisFeedbackSummary.biasRepeatRate >= 0.5 ? 'worsening' : 'stable',
+      evidence: `topBias=${primaryBias.value}:${primaryBias.count}, biasRepeatRate=${diagnosisFeedbackSummary?.biasRepeatRate ?? 'n/a'}`,
+    })
+  }
+
+  if ((humanFeedbackSignals?.rejectedBiases?.length ?? 0) > 0) {
+    const topRejected = humanFeedbackSignals.rejectedBiases[0]
+    findings.push({
+      type: 'optimization',
+      title: `人工已多次否定“${topRejected.value}”这类判断`,
+      detail: `最近人工反馈里，“${topRejected.value}”被判错 ${topRejected.count} 次，后续策略与诊断应避免继续机械套用该偏差标签。`,
+      confidence: Math.min(0.9, 0.62 + topRejected.count * 0.05),
+      trend: 'stable',
+      evidence: `rejectedBias=${topRejected.value}:${topRejected.count}`,
+    })
+  }
+
+  const weakestRule = Array.isArray(recentRulePerformance)
+    ? recentRulePerformance.find((item) => item.effectivenessTier === 'failed' || item.effectivenessTier === 'weak')
+    : null
+  if (weakestRule) {
+    findings.push({
+      type: 'optimization',
+      title: `旧规则“${weakestRule.ruleName}”执行效果偏弱`,
+      detail: `最近回看里，这条规则的后续正确率约 ${Math.round((weakestRule.followupCorrectRate ?? 0) * 100)}%，继续重复提醒意义有限，应调整为更具体的动作规则。`,
+      confidence: weakestRule.effectivenessTier === 'failed' ? 0.84 : 0.72,
+      trend: weakestRule.effectivenessTier === 'failed' ? 'worsening' : 'stable',
+      evidence: `rule=${weakestRule.ruleName}, tier=${weakestRule.effectivenessTier}, followupCorrectRate=${weakestRule.followupCorrectRate}`,
+    })
+  }
+
   if (findings.length === 0) {
     findings.push({
       type: 'pattern',
@@ -1440,13 +1830,28 @@ function buildFindings(summary, previous, retrievedKnowledge = []) {
   return findings
 }
 
-function buildRecommendations(user, summary, strategy, retrievedKnowledge = []) {
+function buildRecommendations(user, summary, strategy, retrievedKnowledge = [], diagnosisFeedbackSummary = null, recentRulePerformance = null, humanFeedbackSignals = null) {
   const bullets = []
   bullets.push(`把今日目标调整到 ${strategy.totalTarget} 道`)
   bullets.push(`把错题复盘上限设为 ${strategy.errorLimit} 道`)
   bullets.push(`守卫复习保留 ${strategy.guardLimit} 道`)
   if (strategy.activationQuestionTypes.length > 0) {
     bullets.push(`优先关注 ${strategy.activationQuestionTypes.join('、')}`)
+  }
+  if (diagnosisFeedbackSummary?.topBiases?.[0]?.value) {
+    bullets.push(`本轮复盘重点盯住“${diagnosisFeedbackSummary.topBiases[0].value}”这类固定盲区`)
+  }
+  const weakestRule = Array.isArray(recentRulePerformance)
+    ? recentRulePerformance.find((item) => item.effectivenessTier === 'failed' || item.effectivenessTier === 'weak')
+    : null
+  if (weakestRule) {
+    bullets.push(`减少重复提醒“${weakestRule.ruleName}”，改成更细的执行动作`)
+  }
+  if (humanFeedbackSignals?.effectiveRules?.[0]?.value) {
+    bullets.push(`优先保留已被人工确认有效的规则：${humanFeedbackSignals.effectiveRules[0].value}`)
+  }
+  if (humanFeedbackSignals?.rejectedBiases?.[0]?.value) {
+    bullets.push(`避免继续把问题简单归为“${humanFeedbackSignals.rejectedBiases[0].value}”`)
   }
   if (retrievedKnowledge.length > 0) {
     bullets.push(`优先复用历史策略：${retrievedKnowledge.map((item) => item.methodName).join('、')}`)
@@ -1478,7 +1883,11 @@ function buildRecommendations(user, summary, strategy, retrievedKnowledge = []) 
       },
       reason: summary.dueReviewCount > 0
         ? `近期到期错题 ${summary.dueReviewCount} 道，需先稳住复盘再扩充真题补位。`
-        : '按近期活跃题量和正确率，当前日任务结构需要重新平衡。',
+        : diagnosisFeedbackSummary?.topBiases?.[0]?.value
+          ? `近期“${diagnosisFeedbackSummary.topBiases[0].value}”反复出现，日任务需要围绕固定盲区重排。`
+          : weakestRule?.ruleName
+            ? `旧规则“${weakestRule.ruleName}”后续正确率偏低，需要用更具体的动作规则替换。`
+          : '按近期活跃题量和正确率，当前日任务结构需要重新平衡。',
       confidence,
       priority: confidence >= 0.75 ? 'high' : 'medium',
       paramKey: 'daily_task_strategy',
@@ -1753,6 +2162,7 @@ function buildUserErrorDiagnosisSnapshotInput({ taskId, resolvedPath, task, resu
     queueTargetType: task.targetType,
     queueTriggeredBy: task.triggeredBy,
     userErrorId: result.userErrorId,
+    biasDiagnosis: result.biasDiagnosis ?? null,
     usedEvidence: result.usedEvidence ?? null,
     diagnosisDecision: result.diagnosisDecision ?? null,
     strategyImpact: result.strategyImpact ?? null,
@@ -1784,6 +2194,7 @@ function buildUserErrorDiagnosisRecommendations(result, strategyEscalation) {
         userErrorId: result.userErrorId,
         aiActionRule: result.diagnosis.aiActionRule,
         aiReasonTag: result.diagnosis.aiReasonTag,
+        biasLabel: result.biasDiagnosis?.label ?? null,
         diagnosisMode: result.diagnosisDecision?.mode ?? 'new_pattern',
       },
       reason: result.diagnosis.customAiAnalysis ?? result.diagnosis.aiThinking,
@@ -1849,6 +2260,12 @@ function buildOutputContractForType(analysisType) {
         aiThinking: 'string <= 180 chars preferred',
         aiReasonTag: 'string',
         customAiAnalysis: 'optional string',
+      },
+      optionalBiasDiagnosisShape: {
+        label: 'string from bias taxonomy',
+        confidence: 'number 0-1',
+        evidence: 'string',
+        repeatRisk: 'low | medium | high',
       },
       optionalUsedEvidenceShape: {
         knowledgeIds: 'string[]',
@@ -1933,6 +2350,7 @@ function buildCodexPrompt(payload) {
 1. 只输出 JSON，不要 markdown，不要解释。
 2. 必须满足 outputContract。
 3. 优先参考 retrievedKnowledge、historicalPatterns、ruleEffectiveness、userProfileSignals、latestStrategySnapshot、question.imageOcr 和 previousDiagnosis，避免空泛重复。
+3.1 如果 humanFeedbackSummary 里有人工确认/否定记录，优先尊重人工反馈，不要固执重复模型自己的旧判断。
 4. 如果题干存在 [图] 或 questionImage，请优先利用 imageOcr 补齐可见文本线索；若 OCR 不完整，也要明确基于现有信息推断。
 5. diagnosis 必须能直接写回 user_errors 的 aiRootReason / aiErrorReason / aiActionRule / aiThinking / aiReasonTag / customAiAnalysis。
 6. customAiAnalysis 要写成可直接展示给用户的完整文本，包含：
@@ -1941,6 +2359,9 @@ function buildCodexPrompt(payload) {
 ⚠️ 警惕模式：
 7. 如果上下文显示这是旧错因复发或旧规则失效，请在 diagnosisDecision 里明确写出。
 8. 如果你参考了历史知识、旧诊断或规则效果，请写入 usedEvidence。
+9. 请输出 biasDiagnosis，用一句话说明这次最核心的认知偏差及其证据。
+10. 优先参考 biasContext.taxonomy 和 biasContext.likelyBiases；biasDiagnosis 应比 aiReasonTag 更稳定、更像“固定误判机制”。
+11. 若 humanFeedbackSummary 显示某个 bias/rule 已被人工否定，请避免继续沿用；若某条规则已被人工确认有效，可优先保留。
 
 本次重点：
 - analysisType: ${payload.analysisType}
@@ -1955,6 +2376,7 @@ function buildCodexPrompt(payload) {
 1. 只输出 JSON，不要 markdown，不要解释。
 2. 必须满足 outputContract。
 3. 优先参考 retrievedKnowledge 和 previousSnapshot，避免重复给出已被证明无效的建议。
+3.1 如果 recentRulePerformance 或 humanFeedbackSignals 已显示某条旧规则失效或被人工否定，必须避免继续机械复用它。
 4. recommendations 必须可执行，且适配当前用户数据，不要空泛鸡汤。
 5. 若建议可沉淀复用，请补 knowledge 字段。
 
@@ -2008,6 +2430,12 @@ function buildResultTemplate(payload) {
         aiThinking: '',
         aiReasonTag: '',
         customAiAnalysis: '',
+      },
+      biasDiagnosis: {
+        label: payload.biasContext?.likelyBiases?.[0]?.label ?? '',
+        confidence: 0.75,
+        evidence: '',
+        repeatRisk: 'medium',
       },
       usedEvidence: {
         knowledgeIds: payload.retrievedKnowledge.map((item) => item.id),
@@ -2186,6 +2614,14 @@ function validateCodexResult(input, expectedTaskId) {
       if (typeof input.usedEvidence.ruleEffectUsed !== 'boolean') throw new Error('result.usedEvidence.ruleEffectUsed must be a boolean')
     }
 
+    if (input.biasDiagnosis != null) {
+      if (!input.biasDiagnosis || typeof input.biasDiagnosis !== 'object') throw new Error('result.biasDiagnosis must be an object')
+      if (typeof input.biasDiagnosis.label !== 'string' || !input.biasDiagnosis.label.trim()) throw new Error('result.biasDiagnosis.label is required')
+      if (typeof input.biasDiagnosis.confidence !== 'number') throw new Error('result.biasDiagnosis.confidence must be a number')
+      if (typeof input.biasDiagnosis.evidence !== 'string') throw new Error('result.biasDiagnosis.evidence must be a string')
+      if (!['low', 'medium', 'high'].includes(input.biasDiagnosis.repeatRisk)) throw new Error('result.biasDiagnosis.repeatRisk must be low|medium|high')
+    }
+
     if (input.diagnosisDecision != null) {
       if (!input.diagnosisDecision || typeof input.diagnosisDecision !== 'object') throw new Error('result.diagnosisDecision must be an object')
       if (!['new_pattern', 'repeat_pattern', 'rule_failed', 'rule_confirmed'].includes(input.diagnosisDecision.mode)) {
@@ -2218,6 +2654,7 @@ function validateCodexResult(input, expectedTaskId) {
         aiReasonTag: input.diagnosis.aiReasonTag,
         customAiAnalysis: typeof input.diagnosis.customAiAnalysis === 'string' ? input.diagnosis.customAiAnalysis : null,
       },
+      biasDiagnosis: input.biasDiagnosis ?? null,
       usedEvidence: input.usedEvidence ?? null,
       diagnosisDecision: input.diagnosisDecision ?? null,
       strategyImpact: input.strategyImpact ?? null,
@@ -2705,6 +3142,17 @@ async function markTaskSkipped(taskId, reason) {
 
 async function query(sql, params = []) {
   return pool.query(sql, params)
+}
+
+async function queryIfTableMissing(sql, params = [], fallback) {
+  try {
+    return await pool.query(sql, params)
+  } catch (error) {
+    if (error && (error.code === '42P01' || error.code === '42703')) {
+      return fallback
+    }
+    throw error
+  }
 }
 
 function toPlainObject(value) {

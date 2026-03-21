@@ -65,8 +65,8 @@ export async function POST(req: NextRequest) {
       payload: Buffer.from(JSON.stringify(
         indexedQuestions.map(question => ({
           ...question,
-          examType,
-          srcName,
+          examType: inferredMeta.examType || examType,
+          srcName: inferredMeta.srcName || srcName || file.name,
           srcOrigin: 'file_import',
         })),
       )).toString('base64'),

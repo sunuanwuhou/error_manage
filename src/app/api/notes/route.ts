@@ -22,6 +22,44 @@ function normalizeComparableText(value: string) {
   return value.trim().replace(/\s+/g, ' ')
 }
 
+function splitSourceIds(value: string | null | undefined) {
+  return normalizeComparableText(value ?? '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function buildResolvedSourceErrorSummary(note: {
+  sourceErrorIds?: string | null
+}, userErrors: Array<{ id: string; questionId: string }>) {
+  const rawIds = splitSourceIds(note.sourceErrorIds)
+  if (rawIds.length === 0) {
+    return {
+      rawSourceErrorIds: [],
+      resolvedSourceErrorIds: [],
+      rawSourceErrorCount: 0,
+      resolvedSourceErrorCount: 0,
+      staleSourceErrorCount: 0,
+    }
+  }
+
+  const errorIdSet = new Set(userErrors.map(item => item.id))
+  const questionIdToErrorId = new Map(userErrors.map(item => [item.questionId, item.id]))
+  const resolvedSourceErrorIds = Array.from(new Set(
+    rawIds
+      .map(id => (errorIdSet.has(id) ? id : (questionIdToErrorId.get(id) ?? '')))
+      .filter(Boolean)
+  ))
+
+  return {
+    rawSourceErrorIds: rawIds,
+    resolvedSourceErrorIds,
+    rawSourceErrorCount: rawIds.length,
+    resolvedSourceErrorCount: resolvedSourceErrorIds.length,
+    staleSourceErrorCount: Math.max(0, rawIds.length - resolvedSourceErrorIds.length),
+  }
+}
+
 function isKnowledgePointDuplicate(note: {
   title: string
   content: string
@@ -47,10 +85,22 @@ export async function GET() {
   const session = await getServerSession(authOptions)
   if (!session?.user) return NextResponse.json({ error: '未登录' }, { status: 401 })
   const userId = (session.user as any).id
-  const notes = await prisma.userNote.findMany({
-    where: { userId }, orderBy: { updatedAt: 'desc' },
-  })
-  return NextResponse.json(notes)
+  const [notes, userErrors] = await Promise.all([
+    prisma.userNote.findMany({
+      where: { userId }, orderBy: { updatedAt: 'desc' },
+    }),
+    prisma.userError.findMany({
+      where: { userId },
+      select: { id: true, questionId: true },
+    }),
+  ])
+
+  return NextResponse.json(
+    notes.map(note => ({
+      ...note,
+      ...buildResolvedSourceErrorSummary(note, userErrors),
+    }))
+  )
 }
 
 export async function POST(req: NextRequest) {

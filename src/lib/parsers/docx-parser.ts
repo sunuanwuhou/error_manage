@@ -192,11 +192,13 @@ export function parseDocxHtml(html: string): {
 
   flushCurrentQuestion()
 
-  if (questions.length === 0) {
+  const normalizedQuestions = normalizeQuestionTypesByOrder(questions)
+
+  if (normalizedQuestions.length === 0) {
     warnings.push('DOCX 未解析出有效题目')
   }
 
-  return { questions, warnings }
+  return { questions: normalizedQuestions, warnings }
 }
 
 function extractHtmlBlocks(html: string): HtmlBlock[] {
@@ -256,6 +258,53 @@ function extractQuestionStart(text: string): { no: string; content: string } | n
 function isSectionHeaderBlock(text: string): boolean {
   return /第[一二三四五六七八九十\d]+部分|常识判断|言语理解与表达|数量关系|判断推理|资料分析/.test(text)
     && !/^(\d{1,3})[.、．]/.test(text)
+}
+
+export function normalizeQuestionTypesByOrder(questions: ParsedQuestion[]) {
+  if (questions.length !== 90) return questions
+
+  const normalized = [...questions]
+  const segments = [
+    { start: 1, end: 15, type: '常识判断' },
+    { start: 16, end: 30, type: '言语理解' },
+    { start: 31, end: 45, type: '数量关系' },
+    { start: 46, end: 70, type: '判断推理' },
+    { start: 71, end: 90, type: '资料分析' },
+  ] as const
+
+  const segmentQuestions = (start: number, end: number) =>
+    normalized.filter(question => {
+      const no = Number(question.no)
+      return Number.isFinite(no) && no >= start && no <= end
+    })
+
+  const stableTail = segments.slice(1).every(segment => {
+    const slice = segmentQuestions(segment.start, segment.end)
+    return slice.length === (segment.end - segment.start + 1) && slice.every(question => question.type === segment.type)
+  })
+
+  if (!stableTail) return questions
+
+  const firstSegment = segmentQuestions(1, 15)
+  const firstSegmentLooksRecoverable =
+    firstSegment.length === 15 &&
+    firstSegment.every(question => ['常识判断', '判断推理'].includes(question.type))
+
+  if (!firstSegmentLooksRecoverable) return questions
+
+  return normalized.map(question => {
+    const no = Number(question.no)
+    if (!Number.isFinite(no)) return question
+
+    const segment = segments.find(item => no >= item.start && no <= item.end)
+    if (!segment) return question
+    if (question.type === segment.type) return question
+
+    return {
+      ...question,
+      type: segment.type,
+    }
+  })
 }
 
 function isSeparatorBlock(text: string): boolean {

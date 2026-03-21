@@ -61,6 +61,8 @@ export async function POST(req: NextRequest) {
   let overwritten   = 0
   let addedToErrors = 0
   let lowQuality    = 0
+  let failed        = 0
+  const failureReport: Array<{ no: string; message: string }> = []
 
   // 按题型统计（用于 ExamTopicStats）
   const typeCount: Record<string, number> = {}
@@ -228,6 +230,13 @@ export async function POST(req: NextRequest) {
       }
     } catch (err: any) {
       console.error(`[导入] 第${i+1}题失败：${err.message}`)
+      failed++
+      if (failureReport.length < 20) {
+        failureReport.push({
+          no: q.no || String(i + 1),
+          message: err?.message || '未知异常',
+        })
+      }
     }
   }
 
@@ -265,8 +274,11 @@ export async function POST(req: NextRequest) {
     overwritten,
     addedToErrors,
     lowQuality,
+    failed,
     total: questions.length,
     qualityReport,   // 质检报告（前端展示）
+    failureReport,
+    duplicateMode,
     typeBreakdown: typeCount,
   })
 }

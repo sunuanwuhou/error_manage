@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import {
+  buildCanonicalPaperSession,
   buildCanonicalPaperTitle,
   inferPaperExamType,
   inferPaperProvince as inferProvinceFromSource,
@@ -17,6 +18,7 @@ export interface PaperMeta {
 export interface PaperListItem extends PaperMeta {
   key: string
   title: string
+  sessionLabel: string | null
   session: string | null
   questionCount: number
 }
@@ -66,6 +68,7 @@ export interface PaperCatalogResult {
 export interface PaperDetailResult extends PaperMeta {
   key: string
   title: string
+  sessionLabel?: string | null
   total: number
   typeBreakdown: Record<string, number>
   items: PaperQuestionItem[]
@@ -103,6 +106,7 @@ type QuestionRow = {
 type PaperIdentity = {
   key: string
   title: string
+  sessionLabel: string | null
   srcExamSession: string | null
   srcYear: string | null
   examType: string
@@ -134,6 +138,12 @@ function buildPaperIdentity(row: PaperRow): PaperIdentity {
   const examType = row.examType && row.examType !== 'common'
     ? row.examType
     : (meta.examType || inferPaperExamType(row.srcExamSession) || 'common')
+  const sessionLabel = buildCanonicalPaperSession({
+    srcExamSession: row.srcExamSession,
+    srcYear,
+    srcProvince,
+    examType,
+  })
   const title = buildCanonicalPaperTitle({
     srcExamSession: row.srcExamSession,
     srcYear,
@@ -142,8 +152,9 @@ function buildPaperIdentity(row: PaperRow): PaperIdentity {
   })
 
   return {
-    key: `paper:${title || `${srcYear ?? ''}|${srcProvince ?? ''}|${examType}`}`,
+    key: `paper:${sessionLabel || `${srcYear ?? ''}|${srcProvince ?? ''}|${examType}|${title}`}`,
     title,
+    sessionLabel: sessionLabel || null,
     srcExamSession: row.srcExamSession,
     srcYear,
     examType,
@@ -222,7 +233,7 @@ export async function getPaperCatalog(filters: {
       }
       bucket.set(identity.key, {
         ...identity,
-        session: row.srcExamSession,
+        session: identity.sessionLabel,
         questionCount: 1,
       })
     }
@@ -334,6 +345,7 @@ export async function getPaperDetail(paperKey: string, userId?: string): Promise
     return {
       key: identity.key,
       title: identity.title,
+      sessionLabel: identity.sessionLabel,
       srcExamSession: identity.srcExamSession,
       srcYear: identity.srcYear,
       examType: identity.examType,
@@ -369,6 +381,7 @@ export async function getPaperDetail(paperKey: string, userId?: string): Promise
     return {
       key: paperKey,
       title: '套卷详情加载失败',
+      sessionLabel: null,
       srcExamSession: null,
       srcYear: null,
       examType: 'common',
@@ -378,5 +391,105 @@ export async function getPaperDetail(paperKey: string, userId?: string): Promise
       items: [],
       error: error?.message ?? '套卷详情加载失败',
     }
+  }
+}
+
+async function rebuildExamTopicStatsForExamType(examType: string) {
+  await prisma.examTopicStats.deleteMany({
+    where: {
+      examType,
+      srcProvince: null,
+    },
+  })
+
+  const allByType = await prisma.question.groupBy({
+    by: ['type'],
+    where: {
+      examType,
+      isFromOfficialBank: true,
+    },
+    _count: { id: true },
+  })
+
+  const total = allByType.reduce((sum, row) => sum + row._count.id, 0)
+  if (total === 0) return
+
+  await prisma.examTopicStats.createMany({
+    data: allByType.map(row => ({
+      examType,
+      srcProvince: null,
+      skillTag: row.type,
+      sectionType: row.type,
+      frequency: row._count.id / total,
+      totalCount: row._count.id,
+      avgDifficulty: 0.5,
+      lastExamYear: null,
+    })),
+  })
+}
+
+export async function deletePaperByKey(paperKey: string) {
+  const detail = await getPaperDetail(paperKey)
+  if (detail.error || detail.items.length === 0) {
+    return {
+      deletedQuestions: 0,
+      deletedUserErrors: 0,
+      deletedPracticeRecords: 0,
+      deletedPaperSessions: 0,
+      deletedReviewRecords: 0,
+      title: detail.title,
+      error: detail.error || '套卷不存在',
+    }
+  }
+
+  const questionIds = detail.items.map(item => item.questionId)
+  const userErrors = await prisma.userError.findMany({
+    where: {
+      questionId: { in: questionIds },
+    },
+    select: {
+      id: true,
+    },
+  })
+  const userErrorIds = userErrors.map(item => item.id)
+
+  const [reviewResult, practiceResult, userErrorResult, paperSessionResult, questionResult] = await prisma.$transaction([
+    prisma.reviewRecord.deleteMany({
+      where: {
+        userErrorId: { in: userErrorIds.length > 0 ? userErrorIds : ['__none__'] },
+      },
+    }),
+    prisma.practiceRecord.deleteMany({
+      where: {
+        questionId: { in: questionIds },
+      },
+    }),
+    prisma.userError.deleteMany({
+      where: {
+        questionId: { in: questionIds },
+      },
+    }),
+    prisma.paperPracticeSession.deleteMany({
+      where: {
+        paperKey,
+      },
+    }),
+    prisma.question.deleteMany({
+      where: {
+        id: { in: questionIds },
+      },
+    }),
+  ])
+
+  await rebuildExamTopicStatsForExamType(detail.examType)
+
+  return {
+    deletedQuestions: questionResult.count,
+    deletedUserErrors: userErrorResult.count,
+    deletedPracticeRecords: practiceResult.count,
+    deletedPaperSessions: paperSessionResult.count,
+    deletedReviewRecords: reviewResult.count,
+    title: detail.title,
+    error: null,
   }
 }

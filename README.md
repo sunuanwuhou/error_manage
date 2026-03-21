@@ -17,9 +17,17 @@
 
 - 想看项目目标、主闭环和路线图：`docs/项目总览与路线图.md`
 - 想看当前最新状态：`docs/progress/current_snapshot.md`
+- 想看当前主线和非主线边界：`docs/progress/当前主线与非主线边界.md`
+- 想看接下来真正还缺什么：`docs/progress/系统待办优先级_产品版.md`
 - 想看完整方案：`docs/spec/技术方案_v7.9.md`
 - 想看架构专题：`docs/architecture/`
 - 想看问题复盘和完成度：`docs/progress/`
+
+当前文档口径补充：
+
+- `docs/progress/current_snapshot.md`：只看当前状态，不再看历史流水
+- `docs/progress/完成度清单.md`：现在是成熟度矩阵，不是静态功能清单
+- AI 相关当前以“文档移交和边界说明”为主，不再作为本轮主开发线
 
 ## 快速启动（约15分钟）
 

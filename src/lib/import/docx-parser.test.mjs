@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { parseDocxHtml } from '../parsers/docx-parser.ts'
+import { normalizeQuestionTypesByOrder, parseDocxHtml } from '../parsers/docx-parser.ts'
 
 const IMG = 'data:image/png;base64,AAAA'
 const SMALL_SVG = `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="40" viewBox="0 0 24 40"><text x="12" y="28" text-anchor="middle" font-size="24">2/3</text></svg>').toString('base64')}`
@@ -74,4 +74,34 @@ test('parseDocxHtml lets new text material reset previous image material in 资�
   assert.ok(imageQuestion?.questionImage.startsWith('data:image/png;base64,'))
   assert.equal(textQuestion?.questionImage || '', '')
   assert.match(textQuestion?.content || '', /【资料】2020年12月，C市天然气用量/)
+})
+
+test('normalizeQuestionTypesByOrder repairs standard 90-question province paper section types', () => {
+  const questions = Array.from({ length: 90 }, (_, idx) => {
+    const no = String(idx + 1)
+    let type = '判断推理'
+    if (idx >= 15 && idx < 30) type = '言语理解'
+    if (idx >= 30 && idx < 45) type = '数量关系'
+    if (idx >= 70) type = '资料分析'
+    if (idx >= 5 && idx < 15) type = '常识判断'
+
+    return {
+      no,
+      content: `第${no}题`,
+      questionImage: '',
+      options: ['A.1', 'B.2', 'C.3', 'D.4'],
+      answer: 'A',
+      type,
+      analysis: '',
+      rawText: '',
+    }
+  })
+
+  const normalized = normalizeQuestionTypesByOrder(questions)
+
+  assert.ok(normalized.slice(0, 15).every(question => question.type === '常识判断'))
+  assert.ok(normalized.slice(15, 30).every(question => question.type === '言语理解'))
+  assert.ok(normalized.slice(30, 45).every(question => question.type === '数量关系'))
+  assert.ok(normalized.slice(45, 70).every(question => question.type === '判断推理'))
+  assert.ok(normalized.slice(70, 90).every(question => question.type === '资料分析'))
 })

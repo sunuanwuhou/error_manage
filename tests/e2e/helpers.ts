@@ -159,6 +159,18 @@ export async function cleanupImportedSession(
   await prisma.question.deleteMany({ where: { id: { in: questionIds } } })
 }
 
+export async function resetUserWorkspace(prisma: PrismaClient, userId: string) {
+  await prisma.reviewRecord.deleteMany({ where: { userId } })
+  await prisma.userError.deleteMany({ where: { userId } })
+  await prisma.practiceRecord.deleteMany({ where: { userId } })
+  await prisma.paperPracticeSession.deleteMany({ where: { userId } })
+  await prisma.userNote.deleteMany({ where: { userId } })
+  await prisma.userInsight.deleteMany({ where: { userId } })
+  await prisma.mockTestRecord.deleteMany({ where: { userId } })
+  await prisma.importJob.deleteMany({ where: { userId } })
+  await prisma.userSectionStats.deleteMany({ where: { userId } })
+}
+
 export function resolveExistingFixturePath(candidates: string[]) {
   return candidates.find(candidate => fs.existsSync(candidate)) ?? null
 }

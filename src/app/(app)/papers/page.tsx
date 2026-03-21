@@ -1,5 +1,8 @@
 import Link from 'next/link'
+import { getServerSession } from 'next-auth'
 import { getPaperCatalog } from '@/lib/papers'
+import { authOptions } from '@/lib/auth'
+import { DeletePaperButton } from '@/components/papers/delete-paper-button'
 
 const EXAM_TYPE_LABELS: Record<string, string> = {
   guo_kao: '国考',
@@ -13,6 +16,8 @@ export default async function PapersPage({
 }: {
   searchParams?: { examType?: string; province?: string; year?: string }
 }) {
+  const session = await getServerSession(authOptions)
+  const isAdmin = (session?.user as { role?: string } | undefined)?.role === 'admin'
   const activeExamType = searchParams?.examType
   const activeProvince = searchParams?.province
   const activeYear = searchParams?.year
@@ -131,9 +136,13 @@ export default async function PapersPage({
                   <p data-testid="paper-card-title" className="font-semibold text-gray-900 text-sm">{paper.title}</p>
                   <p className="text-xs text-gray-400 mt-1">
                     {paper.srcYear ? `${paper.srcYear} · ` : ''}
-                    {EXAM_TYPE_LABELS[paper.examType] ?? paper.examType}
-                    {paper.srcProvince ? ` · ${paper.srcProvince}` : ''}
+                    {paper.srcProvince
+                      ? `${EXAM_TYPE_LABELS[paper.examType] ?? paper.examType}/${paper.srcProvince}`
+                      : (EXAM_TYPE_LABELS[paper.examType] ?? paper.examType)}
                   </p>
+                  {paper.sessionLabel ? (
+                    <p className="text-[11px] text-gray-300 mt-1 line-clamp-1">{paper.sessionLabel}</p>
+                  ) : null}
                 </div>
                 <div className="text-right flex-shrink-0">
                   <p className="text-lg font-bold text-blue-600">{paper.questionCount}</p>
@@ -142,17 +151,12 @@ export default async function PapersPage({
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2">
+                <span className="rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-500 border border-gray-100">
+                  {(EXAM_TYPE_LABELS[paper.examType] ?? paper.examType) + (paper.srcProvince ? ` / ${paper.srcProvince}` : '')}
+                </span>
                 {paper.srcYear && (
                   <span className="rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-500 border border-gray-100">
                     {paper.srcYear} 年
-                  </span>
-                )}
-                <span className="rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-500 border border-gray-100">
-                  {EXAM_TYPE_LABELS[paper.examType] ?? paper.examType}
-                </span>
-                {paper.srcProvince && (
-                  <span className="rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-500 border border-gray-100">
-                    {paper.srcProvince}
                   </span>
                 )}
                 <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs text-blue-600 border border-blue-100">
@@ -168,6 +172,13 @@ export default async function PapersPage({
                 >
                   开始整套练习
                 </Link>
+                {isAdmin ? (
+                  <DeletePaperButton
+                    paperKey={paper.key}
+                    paperTitle={paper.title}
+                    questionCount={paper.questionCount}
+                  />
+                ) : null}
               </div>
             </div>
           ))}

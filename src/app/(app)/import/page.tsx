@@ -53,9 +53,12 @@ interface ImportResult {
   overwritten:  number
   addedToErrors: number
   lowQuality:   number
+  failed:       number
   total:        number
+  duplicateMode?: DuplicateMode
   typeBreakdown: Record<string, number>
   qualityReport: Array<{ no: string; score: number; issues: string[] }>
+  failureReport?: Array<{ no: string; message: string }>
 }
 
 const EXAM_TYPES = [
@@ -72,6 +75,21 @@ const PROVINCES = [
   '内蒙古', '陕西', '吉林', '福建', '贵州', '广东', '青海', '西藏', '四川', '宁夏',
   '海南',
 ]
+
+const DUPLICATE_MODE_LABELS: Record<DuplicateMode, { label: string; desc: string }> = {
+  skip: {
+    label: '跳过重复',
+    desc: '遇到重复题就保留旧题，不覆盖。',
+  },
+  replace_low_quality: {
+    label: '覆盖低质量旧题',
+    desc: '只有当新题更完整时，才替换旧题。',
+  },
+  force_replace: {
+    label: '强制覆盖',
+    desc: '只要重复就用新题替换旧题。',
+  },
+}
 
 function inferImportMeta(fileName: string) {
   const baseName = fileName.replace(/\.[^.]+$/, '').trim()
@@ -103,6 +121,15 @@ function encodePayload(questions: PayloadQuestion[]) {
   const bytes = new TextEncoder().encode(JSON.stringify(questions))
   const binary = Array.from(bytes, byte => String.fromCharCode(byte)).join('')
   return btoa(binary)
+}
+
+function buildPapersHref(meta: { examType?: string; srcProvince?: string; srcYear?: string }) {
+  const params = new URLSearchParams()
+  if (meta.examType) params.set('examType', meta.examType)
+  if (meta.srcProvince) params.set('province', meta.srcProvince)
+  if (meta.srcYear) params.set('year', meta.srcYear)
+  const query = params.toString()
+  return query ? `/papers?${query}` : '/papers'
 }
 
 export default function ImportPage() {
@@ -269,28 +296,87 @@ export default function ImportPage() {
 
   // ---- 完成页 ----
   if (step === 'done' && importResult) {
+    const abnormalCount = (importResult.lowQuality ?? 0) + (importResult.failed ?? 0)
+    const strategy = DUPLICATE_MODE_LABELS[importResult.duplicateMode ?? duplicateMode] ?? DUPLICATE_MODE_LABELS.skip
+    const papersHref = buildPapersHref({
+      examType,
+      srcProvince: srcProvince.trim() || undefined,
+      srcYear: srcYear.trim() || undefined,
+    })
+    const failureCount = importResult.failed ?? 0
+    const warningCount = result?.warnings?.length ?? 0
+
     return (
       <div className="max-w-lg mx-auto px-4 pt-8 pb-8">
         <div className="text-center mb-6">
           <div className="text-5xl mb-3">✅</div>
           <h2 className="text-xl font-bold text-gray-900">导入完成</h2>
+          <p className="mt-2 text-xs text-gray-400">
+            本次策略：{strategy.label} · {strategy.desc}
+          </p>
         </div>
 
         {/* 数量汇总 */}
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4 space-y-2 text-sm">
           {[
-            { label: '新入库题目', value: importResult?.imported ?? 0,     color: 'text-blue-600' },
-            { label: '重复跳过',  value: importResult?.skipped ?? 0,       color: 'text-gray-400' },
-            { label: '覆盖更新',  value: importResult?.overwritten ?? 0,   color: 'text-violet-600' },
-            { label: '低质量跳过', value: importResult?.lowQuality ?? 0,   color: 'text-amber-500' },
-            { label: '加入待练队列', value: (importResult?.imported ?? 0) + (importResult?.overwritten ?? 0),   color: 'text-green-600' },
+            { label: '创建', value: importResult?.imported ?? 0, color: 'text-blue-600', hint: '新入库题目' },
+            { label: '跳过', value: importResult?.skipped ?? 0, color: 'text-gray-500', hint: '重复且未覆盖' },
+            { label: '覆盖', value: importResult?.overwritten ?? 0, color: 'text-violet-600', hint: '重复后更新' },
+            {
+              label: '异常',
+              value: abnormalCount,
+              color: abnormalCount > 0 ? 'text-red-600' : 'text-emerald-600',
+              hint: failureCount > 0
+                ? `失败 ${failureCount} · 低质量 ${importResult.lowQuality ?? 0}`
+                : `低质量 ${importResult.lowQuality ?? 0} · 提醒 ${warningCount}`,
+            },
+            { label: '加入待练队列', value: (importResult?.imported ?? 0) + (importResult?.overwritten ?? 0), color: 'text-green-600', hint: '进入套卷/真题练习池' },
           ].map(item => (
-            <div key={item.label} className="flex justify-between">
-              <span className="text-gray-500">{item.label}</span>
+            <div key={item.label} className="flex items-start justify-between gap-3">
+              <div>
+                <span className="text-gray-500">{item.label}</span>
+                <p className="text-[11px] text-gray-300 mt-0.5">{item.hint}</p>
+              </div>
               <span className={`font-bold ${item.color}`}>{item.value} 道</span>
             </div>
           ))}
         </div>
+
+        {/* 异常明细 */}
+        {(failureCount > 0 || warningCount > 0 || (importResult?.qualityReport?.length ?? 0) > 0) && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-4">
+            <p className="text-sm font-medium text-red-700 mb-2">异常明细</p>
+            {warningCount > 0 && (
+              <p className="text-xs text-red-600 mb-2">解析提醒 {warningCount} 条</p>
+            )}
+            {failureCount > 0 && (
+              <div className="space-y-1 mb-3">
+                {importResult.failureReport?.slice(0, 5).map((item, index) => (
+                  <div key={`${item.no}-${index}`} className="text-xs text-red-600 flex gap-2">
+                    <span className="flex-shrink-0">#{item.no}</span>
+                    <span className="truncate">{item.message}</span>
+                  </div>
+                ))}
+                {failureCount > 5 && (
+                  <p className="text-xs text-red-500">还有 {failureCount - 5} 条异常未展示</p>
+                )}
+              </div>
+            )}
+            {importResult?.qualityReport?.length > 0 && (
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {importResult.qualityReport.slice(0, 5).map((r: any, i: number) => (
+                  <div key={i} className="text-xs text-red-600 flex gap-2">
+                    <span className="flex-shrink-0">#{r.no}</span>
+                    <span>{r.issues.join('、')}</span>
+                  </div>
+                ))}
+                {importResult.qualityReport.length > 5 && (
+                  <p className="text-xs text-red-500">还有 {importResult.qualityReport.length - 5} 条质检提醒</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* 考点分布 */}
         {importResult?.typeBreakdown && Object.keys(importResult.typeBreakdown).length > 0 && (
@@ -313,39 +399,35 @@ export default function ImportPage() {
           </div>
         )}
 
-        {/* 质检问题（折叠） */}
-        {importResult?.qualityReport?.length > 0 && (
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4">
-            <p className="text-sm font-medium text-amber-700 mb-2">
-              ⚠️ {importResult.qualityReport.length} 道题有质量问题
-            </p>
-            <div className="space-y-1 max-h-40 overflow-y-auto">
-              {importResult.qualityReport.slice(0, 10).map((r: any, i: number) => (
-                <div key={i} className="text-xs text-amber-600 flex gap-2">
-                  <span className="flex-shrink-0">#{r.no}</span>
-                  <span>{r.issues.join('、')}</span>
-                  <span className="ml-auto flex-shrink-0">质量{r.score}%</span>
-                </div>
-              ))}
-              {importResult.qualityReport.length > 10 && (
-                <p className="text-xs text-amber-500">还有 {importResult.qualityReport.length - 10} 条...</p>
-              )}
-            </div>
-          </div>
-        )}
+        <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 mb-4">
+          <p className="text-sm font-medium text-blue-700 mb-2">导入后去向</p>
+          <p className="text-xs text-blue-600 leading-6">
+            题目已进入真题练习池，建议先去套卷页按年份 / 省份查看整套题；如果想先处理错题，可直接进错题本。
+          </p>
+        </div>
 
         <p className="text-xs text-gray-400 text-center mb-5">
-          导入的题目已加入真题练习队列，打开首页即可开始练习
+          {warningCount > 0 || failureCount > 0 || (importResult?.qualityReport?.length ?? 0) > 0
+            ? '本次导入已记录异常与质检提醒，后续可在知识树和错题本中继续整理。'
+            : '导入的题目已加入真题练习池，套卷页会按来源自动归组。'}
         </p>
-        <div className="flex gap-3">
-          <button onClick={() => { setStep('upload'); setResult(null); setImportResult(null) }}
-            className="flex-1 py-3 border border-gray-200 text-gray-600 rounded-2xl font-medium">
-            继续导入
+        <div className="flex flex-col gap-3">
+          <button
+            onClick={() => router.push(papersHref)}
+            className="w-full py-3 bg-blue-600 text-white rounded-2xl font-bold"
+          >
+            去套卷练习
           </button>
-          <button onClick={() => router.push('/errors')}
-            className="flex-1 py-3 bg-blue-600 text-white rounded-2xl font-bold">
-            查看错题本
-          </button>
+          <div className="grid grid-cols-2 gap-3">
+            <button onClick={() => router.push('/errors')}
+              className="py-3 border border-gray-200 text-gray-600 rounded-2xl font-medium">
+              查看错题本
+            </button>
+            <button onClick={() => { setStep('upload'); setResult(null); setImportResult(null) }}
+              className="py-3 border border-gray-200 text-gray-600 rounded-2xl font-medium">
+              继续导入
+            </button>
+          </div>
         </div>
       </div>
     )

@@ -384,6 +384,24 @@ model SystemInsight {
   @@map("system_insights")
 }
 
+model AIFeedbackLog {
+  id            String   @id @default(cuid())
+  userId        String?
+  sourceType    String
+  sourceId      String
+  analysisType  String?
+  feedbackType  String
+  feedbackValue String?
+  comment       String?
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  @@index([userId, sourceType, sourceId, createdAt])
+  @@index([sourceType, sourceId, createdAt])
+  @@index([userId, feedbackType, createdAt])
+  @@map("ai_feedback_logs")
+}
+
 model AnalysisDiscussion {
   id              String   @id @default(cuid())
   userId          String

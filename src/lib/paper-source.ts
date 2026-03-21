@@ -10,6 +10,7 @@ export type ExamType = 'guo_kao' | 'sheng_kao' | 'tong_kao' | 'common'
 export interface PaperSourceMeta {
   normalizedName: string
   srcName: string
+  baseTitle: string
   srcYear: string
   srcProvince: string
   examType: ExamType
@@ -39,6 +40,31 @@ export function normalizePaperSourceName(input: string) {
     .replace(/\s*（/g, '（')
     .replace(/）\s*/g, '）')
     .replace(/\s{2,}/g, ' ')
+}
+
+function getExamTypeLabel(examType: string | null | undefined) {
+  if (examType === 'guo_kao') return '国考'
+  if (examType === 'sheng_kao') return '省考'
+  if (examType === 'tong_kao') return '统考'
+  return ''
+}
+
+export function extractPaperBaseTitle(...candidates: Array<string | null | undefined>) {
+  for (const candidate of candidates) {
+    const normalized = normalizePaperSourceName(candidate ?? '')
+    if (!normalized) continue
+
+    const baseTitle = normalized
+      .replace(/^(20\d{2})年?\s*/, '')
+      .replace(/^(国家公务员|国家|国考|省考|统考|联考|多省联考)\s*/, '')
+      .replace(new RegExp(`^(?:${PROVINCES.join('|')})(?:省|市|自治区)?\\s*`), '')
+      .replace(/^[·•\-_/、\s]+/, '')
+      .trim()
+
+    if (baseTitle) return baseTitle
+  }
+
+  return ''
 }
 
 export function extractPaperTitleFromText(rawText: string) {
@@ -101,14 +127,23 @@ export function inferPaperSourceMeta(params: {
   const srcName = normalizePaperSourceName(params.srcName ?? '')
   const titleFromText = params.rawText ? extractPaperTitleFromText(params.rawText) : ''
   const normalizedName = srcName || titleFromText || fileName
+  const srcYear = inferPaperYear(srcName, titleFromText, fileName)
+  const srcProvince = inferPaperProvince(srcName, titleFromText, fileName)
+  const examType = inferPaperExamType(srcName, titleFromText, fileName)
+  const specialization = inferPaperSpecialization(srcName, titleFromText, fileName)
+  const baseTitle = extractPaperBaseTitle(srcName, titleFromText, fileName)
+  const typeLabel = getExamTypeLabel(examType)
+  const typeSegment = [typeLabel, srcProvince].filter(Boolean).join('/')
+  const canonicalSrcName = [srcYear, typeSegment, baseTitle || normalizedName].filter(Boolean).join(' ').trim()
 
   return {
     normalizedName,
-    srcName: normalizedName,
-    srcYear: inferPaperYear(srcName, titleFromText, fileName),
-    srcProvince: inferPaperProvince(srcName, titleFromText, fileName),
-    examType: inferPaperExamType(srcName, titleFromText, fileName),
-    specialization: inferPaperSpecialization(srcName, titleFromText, fileName),
+    srcName: canonicalSrcName || normalizedName,
+    baseTitle: baseTitle || specialization || normalizedName,
+    srcYear,
+    srcProvince,
+    examType,
+    specialization,
   }
 }
 
@@ -119,26 +154,35 @@ export function buildCanonicalPaperTitle(params: {
   examType?: string | null
 }) {
   const normalizedSession = normalizePaperSourceName(params.srcExamSession ?? '')
-  if (normalizedSession) return normalizedSession
-
   const inferred = inferPaperSourceMeta({
     srcName: normalizedSession,
   })
+  if (inferred.baseTitle) return inferred.baseTitle
 
-  const typeLabel =
-    params.examType === 'guo_kao' ? '国考' :
-    params.examType === 'sheng_kao' ? '省考' :
-    params.examType === 'tong_kao' ? '统考' :
-    ''
+  const specialization = inferred.specialization
+  if (specialization) {
+    return /《[^》]+》/.test(specialization) ? specialization : `公务员录用考试《${specialization}》题`
+  }
 
-  return [
-    params.srcYear || inferred.srcYear,
-    params.srcProvince || inferred.srcProvince,
-    inferred.specialization,
-    typeLabel,
-    '真题',
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .trim()
+  return '公务员录用考试真题'
+}
+
+export function buildCanonicalPaperSession(params: {
+  srcExamSession?: string | null
+  srcYear?: string | null
+  srcProvince?: string | null
+  examType?: string | null
+}) {
+  const normalizedSession = normalizePaperSourceName(params.srcExamSession ?? '')
+  const inferred = inferPaperSourceMeta({
+    srcName: normalizedSession,
+  })
+  const srcYear = params.srcYear || inferred.srcYear
+  const srcProvince = params.srcProvince || inferred.srcProvince
+  const examType = params.examType || inferred.examType
+  const typeLabel = getExamTypeLabel(examType)
+  const typeSegment = [typeLabel, srcProvince].filter(Boolean).join('/')
+  const title = inferred.baseTitle || buildCanonicalPaperTitle(params)
+
+  return [srcYear, typeSegment, title].filter(Boolean).join(' ').trim()
 }
