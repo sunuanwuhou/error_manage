@@ -284,7 +284,11 @@ export default function SettingsPage() {
       </div>
 
       {/* 退出登录 */}
-      <button onClick={() => signOut({ callbackUrl: '/login' })}
+      <button onClick={async () => {
+        await signOut({ redirect: false })
+        router.replace('/login')
+        router.refresh()
+      }}
         className="w-full py-3 border border-red-200 text-red-500 font-medium rounded-2xl hover:bg-red-50 transition-colors">
         退出登录
       </button>
