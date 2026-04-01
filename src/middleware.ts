@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getToken } from 'next-auth/jwt'
 
 const loginAttempts = new Map<string, { count: number; resetAt: number }>()
 
@@ -38,13 +37,6 @@ export async function middleware(req: NextRequest) {
         },
         { status: 429 },
       )
-    }
-  }
-
-  if (pathname.startsWith('/api/') && !pathname.startsWith('/api/auth/')) {
-    const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET })
-    if (!token) {
-      return NextResponse.json({ error: '未登录' }, { status: 401 })
     }
   }
 
