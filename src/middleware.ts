@@ -29,8 +29,13 @@ export async function middleware(req: NextRequest) {
       ?? '127.0.0.1'
 
     if (!checkLoginRateLimit(ip)) {
+      const loginUrl = new URL('/login?error=RateLimit', req.nextUrl.origin).toString()
       return NextResponse.json(
-        { error: '登录尝试过于频繁，请 15 分钟后再试' },
+        {
+          error: 'RateLimit',
+          message: '登录尝试过于频繁，请 15 分钟后再试',
+          url: loginUrl,
+        },
         { status: 429 },
       )
     }

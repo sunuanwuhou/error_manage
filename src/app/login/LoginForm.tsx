@@ -16,20 +16,34 @@ export function LoginForm() {
     setLoading(true)
     setError('')
 
-    const res = await signIn('credentials', {
-      username,
-      password,
-      redirect: false,
-    })
+    try {
+      const res = await signIn('credentials', {
+        username,
+        password,
+        redirect: false,
+      })
 
-    setLoading(false)
+      if (res?.error) {
+        if (res.error === 'RateLimit') {
+          setError('登录尝试过于频繁，请 15 分钟后再试')
+          return
+        }
 
-    if (res?.error) {
-      setError(res.error === 'CredentialsSignin' ? '用户名或密码错误' : res.error)
-      return
+        setError(res.error === 'CredentialsSignin' ? '用户名或密码错误' : res.error)
+        return
+      }
+
+      router.push('/dashboard')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (message.includes('Invalid URL')) {
+        setError('登录请求被限流，请 15 分钟后重试')
+        return
+      }
+      setError('登录失败，请稍后重试')
+    } finally {
+      setLoading(false)
     }
-
-    router.push('/dashboard')
   }
 
   return (

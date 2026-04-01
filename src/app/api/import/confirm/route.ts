@@ -1,32 +1,105 @@
-// src/app/api/import/confirm/route.ts
-// 导入确认：写入题库 + ExamTopicStats自动填充 + 真题练习队列 + 质检
-
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
+import { z } from 'zod'
+
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { inferPaperQuestionOrder } from '@/lib/papers'
-import { buildFingerprint, normalizeText, qualityCheck, shouldReplaceExisting, type DuplicateMode } from '@/lib/import/duplicate-policy'
-import { attachErrorToKnowledgeNote } from '@/lib/knowledge-notes'
-import { z } from 'zod'
-import type { ParsedQuestion } from '@/lib/parsers/pdf-parser'
+import { buildFingerprint, qualityCheck, shouldReplaceExisting, type DuplicateMode } from '@/lib/import/duplicate-policy'
+import { updateImportJobResult } from '@/lib/import/import-job'
+import { evaluateImportQuality, inferQuestionType } from '@/lib/import/quality-gate'
 
 const schema = z.object({
-  payload:     z.string(),
-  srcYear:     z.string().optional(),
+  importJobId: z.string().optional(),
+  payload: z.string().optional(),
+  srcYear: z.string().optional(),
   srcProvince: z.string().optional(),
-  srcSession:  z.string().optional(),
-  srcOrigin:   z.string().optional(),
+  srcSession: z.string().optional(),
+  srcOrigin: z.string().optional(),
+  examType: z.string().optional(),
   duplicateMode: z.enum(['skip', 'replace_low_quality', 'force_replace']).optional(),
   addToErrors: z.array(z.number()).optional(),
-  selected:    z.array(z.number()).optional(),
+  selected: z.array(z.number()).optional(),
 })
 
-interface ImportedPayloadQuestion extends ParsedQuestion {
-  examType: string
-  srcName: string
-  srcOrigin?: string
+type ImportedQuestion = {
   index?: number
+  no: string
+  content: string
+  questionImage?: string
+  options: string[]
+  answer: string
+  type: string
+  analysis?: string
+  examType?: string
+  srcName?: string
+  srcOrigin?: string
+  rawText?: string
+}
+
+function decodePayload(payload: string): ImportedQuestion[] {
+  const binary = Buffer.from(payload, 'base64').toString('utf8')
+  return JSON.parse(binary)
+}
+
+function safeParseOptions(raw?: string | null) {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+async function findExistingQuestion(args: {
+  examType: string
+  srcYear: string | null
+  srcProvince: string | null
+  srcSession: string | null
+  srcQuestionNo: string | null
+  srcQuestionOrder: number | null
+  fingerprint: string
+}) {
+  const exact = await prisma.question.findFirst({
+    where: {
+      examType: args.examType,
+      srcYear: args.srcYear,
+      srcProvince: args.srcProvince,
+      srcExamSession: args.srcSession,
+      ...(args.srcQuestionNo ? { srcQuestionNo: args.srcQuestionNo } : {}),
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (exact) return exact
+
+  const orderMatched = await prisma.question.findFirst({
+    where: {
+      examType: args.examType,
+      srcYear: args.srcYear,
+      srcProvince: args.srcProvince,
+      srcExamSession: args.srcSession,
+      ...(args.srcQuestionOrder != null ? { srcQuestionOrder: args.srcQuestionOrder } : {}),
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (orderMatched) return orderMatched
+
+  const candidates = await prisma.question.findMany({
+    where: {
+      examType: args.examType,
+      srcYear: args.srcYear,
+      srcProvince: args.srcProvince,
+    },
+    take: 100,
+    orderBy: { createdAt: 'desc' },
+  })
+
+  return candidates.find(item => buildFingerprint({
+    content: item.content,
+    options: safeParseOptions(item.options),
+    answer: item.answer,
+  }) === args.fingerprint) || null
 }
 
 export async function POST(req: NextRequest) {
@@ -35,365 +108,226 @@ export async function POST(req: NextRequest) {
   const userId = (session.user as any).id
 
   const parsed = schema.safeParse(await req.json())
-  if (!parsed.success) return NextResponse.json({ error: '参数错误' }, { status: 400 })
-  const d = parsed.data
+  if (!parsed.success) {
+    return NextResponse.json({ error: '参数错误', details: parsed.error.flatten() }, { status: 400 })
+  }
 
-  let questions: ImportedPayloadQuestion[]
+  const data = parsed.data
+  const duplicateMode: DuplicateMode = data.duplicateMode || 'replace_low_quality'
+  const selectedSet = new Set(data.selected || [])
+  const addToErrors = new Set(data.addToErrors || [])
+
+  let questions: ImportedQuestion[] = []
   try {
-    questions = JSON.parse(Buffer.from(d.payload, 'base64').toString('utf-8'))
+    if (data.importJobId) {
+      const job = await prisma.importJob.findFirst({ where: { id: data.importJobId, userId } })
+      if (!job) return NextResponse.json({ error: '导入任务不存在' }, { status: 404 })
+      questions = job.parsedQuestions ? JSON.parse(job.parsedQuestions) : []
+    } else if (data.payload) {
+      questions = decodePayload(data.payload)
+    } else {
+      return NextResponse.json({ error: '缺少 importJobId 或 payload' }, { status: 400 })
+    }
   } catch {
-    return NextResponse.json({ error: 'payload 解析失败，请重新上传' }, { status: 400 })
+    return NextResponse.json({ error: '导入载荷解码失败' }, { status: 400 })
   }
 
-  if (d.selected) {
-    const selectedSet = new Set(d.selected)
-    questions = questions.filter(q => q.index != null && selectedSet.has(q.index))
+  const targetQuestions = selectedSet.size
+    ? questions.filter(item => item.index != null && selectedSet.has(item.index))
+    : questions
+
+  const blockedQuestions: Array<{ no: string; issues: string[] }> = []
+  targetQuestions.forEach((q, i) => {
+    const normalized = { ...q, type: inferQuestionType(q as any) }
+    const gate = evaluateImportQuality(normalized as any)
+    if (gate.blockers.length) {
+      blockedQuestions.push({
+        no: q.no || String(i + 1),
+        issues: gate.blockers.map(item => item.label),
+      })
+    }
+  })
+
+  if (blockedQuestions.length) {
+    return NextResponse.json({
+      error: '存在阻断题，已禁止发布到练习',
+      blockedQuestions,
+      blockedCount: blockedQuestions.length,
+    }, { status: 400 })
   }
 
-  const addSet          = new Set(d.addToErrors ?? [])
-  const importedIds:    string[] = []
-  const qualityReport:  Array<{ no: string; score: number; issues: string[] }> = []
-  const payloadFingerprints = new Set<string>()
-  const duplicateMode: DuplicateMode = d.duplicateMode ?? 'skip'
-
-  let imported      = 0
-  let skipped       = 0
-  let overwritten   = 0
+  let imported = 0
+  let skipped = 0
+  let overwritten = 0
   let addedToErrors = 0
-  let lowQuality    = 0
-  let failed        = 0
+  let lowQuality = 0
+  let failed = 0
+  let stableIdUpdates = 0
+  const typeBreakdown: Record<string, number> = {}
+  const qualityReport: Array<{ no: string; score: number; issues: string[] }> = []
   const failureReport: Array<{ no: string; message: string }> = []
 
-  // 按题型统计（用于 ExamTopicStats）
-  const typeCount: Record<string, number> = {}
+  try {
+    for (const [i, q] of targetQuestions.entries()) {
+      try {
+        const normalized = { ...q, type: inferQuestionType(q as any) }
+        const quality = qualityCheck({
+          content: normalized.content,
+          options: normalized.options,
+          answer: normalized.answer,
+          analysis: normalized.analysis,
+        })
+        qualityReport.push({ no: normalized.no || String(i + 1), score: quality.score, issues: quality.issues })
+        if (quality.score < 60) lowQuality += 1
 
-  for (let i = 0; i < questions.length; i++) {
-    const q = questions[i]
-    if (!q.content || q.content.length < 5) continue
-    const sourceQuestionNo = q.no?.trim() || null
-    const sourceQuestionOrder = inferPaperQuestionOrder(sourceQuestionNo) ?? (i + 1)
-    const sourceExamSession = d.srcSession ?? q.srcName ?? null
-    const fingerprint = buildFingerprint(q)
-    if (payloadFingerprints.has(fingerprint)) {
-      skipped++
-      continue
-    }
-    payloadFingerprints.add(fingerprint)
+        const content = String(normalized.content || '').trim()
+        const sourceQuestionOrder = inferPaperQuestionOrder(normalized.no || null)
+        const fingerprint = buildFingerprint({ content, options: normalized.options, answer: normalized.answer })
 
-    // 质检
-    const { score, issues } = qualityCheck(q)
-    if (issues.length > 0) {
-      qualityReport.push({ no: q.no, score, issues })
-      if (score < 50) { lowQuality++; continue }  // 质量太差直接跳过
-    }
+        const finalExamType = data.examType || normalized.examType || 'common'
+        const finalSrcYear = data.srcYear || null
+        const finalSrcProvince = data.srcProvince || null
+        const finalSrcSession = data.srcSession || null
+        const finalSrcOrigin = data.srcOrigin || normalized.srcOrigin || null
+        const finalSrcQuestionNo = normalized.no || null
 
-    // 统计题型
-    typeCount[q.type] = (typeCount[q.type] ?? 0) + 1
+        const existing = await findExistingQuestion({
+          examType: finalExamType,
+          srcYear: finalSrcYear,
+          srcProvince: finalSrcProvince,
+          srcSession: finalSrcSession,
+          srcQuestionNo: finalSrcQuestionNo,
+          srcQuestionOrder: sourceQuestionOrder,
+          fingerprint,
+        })
 
-    try {
-      const candidates = await prisma.question.findMany({
-        where: {
-          isFromOfficialBank: true,
-          type: q.type,
-          examType: q.examType ?? 'common',
-          OR: [
-            { content: q.content },
-            {
-              srcExamSession: d.srcSession ?? q.srcName ?? null,
-              srcYear: d.srcYear ?? null,
-              srcProvince: d.srcProvince ?? null,
-            },
-          ],
-        },
-        select: {
-          id: true,
-          content: true,
-          options: true,
-          answer: true,
-          analysis: true,
-          type: true,
-          srcExamSession: true,
-          srcQuestionNo: true,
-          srcQuestionOrder: true,
-        },
-      })
+        let questionId: string | null = null
 
-      const existing = candidates.find(item => {
-        const existingFingerprint = [
-          normalizeText(item.content).slice(0, 180),
-          (() => {
-            try {
-              const parsed = JSON.parse(item.options ?? '[]')
-              return Array.isArray(parsed) ? parsed.map(opt => normalizeText(String(opt))).join('|') : ''
-            } catch {
-              return ''
-            }
-          })(),
-          item.answer || '',
-          item.type || '',
-        ].join('::')
-        return existingFingerprint === fingerprint || normalizeText(item.content) === normalizeText(q.content)
-      })
-
-      let questionId: string
-
-      if (existing) {
-        questionId = existing.id
-        const shouldReplace = shouldReplaceExisting(duplicateMode, q, existing)
-
-        if (shouldReplace) {
-          await prisma.question.update({
-            where: { id: existing.id },
+        if (existing) {
+          if (shouldReplaceExisting({
+            mode: duplicateMode,
+            existing,
+            incoming: { content, options: normalized.options, analysis: normalized.analysis, answer: normalized.answer },
+          })) {
+            const updated = await prisma.question.update({
+              where: { id: existing.id },
+              data: {
+                content,
+                questionImage: normalized.questionImage || existing.questionImage,
+                options: JSON.stringify((normalized.options || []).filter(Boolean)),
+                answer: normalized.answer || existing.answer,
+                analysis: normalized.analysis || existing.analysis,
+                type: normalized.type || existing.type,
+                examType: finalExamType,
+                srcYear: finalSrcYear,
+                srcProvince: finalSrcProvince,
+                srcExamSession: finalSrcSession,
+                srcOrigin: finalSrcOrigin,
+                srcQuestionNo: finalSrcQuestionNo,
+                srcQuestionOrder: sourceQuestionOrder ?? existing.srcQuestionOrder,
+                isFromOfficialBank: true,
+                isPublic: true,
+              },
+            })
+            questionId = updated.id
+            overwritten += 1
+            stableIdUpdates += 1
+          } else {
+            questionId = existing.id
+            skipped += 1
+          }
+        } else {
+          const created = await prisma.question.create({
             data: {
-              content: q.content,
-              questionImage: q.questionImage || null,
-              options: JSON.stringify(q.options),
-              answer: q.answer || '',
-              analysis: q.analysis || null,
-              type: q.type,
-              examType: q.examType ?? 'common',
-              srcYear: d.srcYear ?? null,
-              srcProvince: d.srcProvince ?? null,
-              srcExamSession: sourceExamSession,
-              srcOrigin: d.srcOrigin ?? q.srcOrigin ?? null,
-              srcQuestionNo: sourceQuestionNo,
+              addedBy: userId,
+              content,
+              questionImage: normalized.questionImage || null,
+              options: JSON.stringify((normalized.options || []).filter(Boolean)),
+              answer: normalized.answer || '',
+              analysis: normalized.analysis || null,
+              type: normalized.type || '单项选择题',
+              examType: finalExamType,
+              srcYear: finalSrcYear,
+              srcProvince: finalSrcProvince,
+              srcExamSession: finalSrcSession,
+              srcOrigin: finalSrcOrigin,
+              srcQuestionNo: finalSrcQuestionNo,
               srcQuestionOrder: sourceQuestionOrder,
               isFromOfficialBank: true,
               isPublic: true,
             },
           })
-          overwritten++
-        } else {
-          skipped++
-          const sameSource = existing.srcExamSession === sourceExamSession
-          if (sameSource && (!existing.srcQuestionNo || !existing.srcQuestionOrder)) {
-            await prisma.question.update({
-              where: { id: existing.id },
+          questionId = created.id
+          imported += 1
+        }
+
+        typeBreakdown[normalized.type || '未分类'] = (typeBreakdown[normalized.type || '未分类'] || 0) + 1
+
+        if (questionId && normalized.index != null && addToErrors.has(normalized.index)) {
+          const existedError = await prisma.userError.findUnique({
+            where: { userId_questionId: { userId, questionId } },
+          })
+          if (!existedError) {
+            await prisma.userError.create({
               data: {
-                ...(existing.srcQuestionNo ? {} : { srcQuestionNo: sourceQuestionNo }),
-                ...(existing.srcQuestionOrder ? {} : { srcQuestionOrder: sourceQuestionOrder }),
+                userId,
+                questionId,
+                myAnswer: '',
+                errorReason: '批量导入后加入错题本',
+                masteryPercent: 0,
+                reviewInterval: 1,
+                nextReviewAt: new Date(),
               },
             })
+            addedToErrors += 1
           }
         }
-      } else {
-        const created = await prisma.question.create({
-          data: {
-            addedBy:            userId,
-            content:            q.content,
-            questionImage:      q.questionImage || null,
-            options:            JSON.stringify(q.options),
-            answer:             q.answer || '',
-            analysis:           q.analysis || null,
-            type:               q.type,
-            examType:           q.examType ?? 'common',
-            srcYear:            d.srcYear ?? null,
-            srcProvince:        d.srcProvince ?? null,
-            srcExamSession:     sourceExamSession,
-            srcOrigin:          d.srcOrigin ?? q.srcOrigin ?? null,
-            srcQuestionNo:      sourceQuestionNo,
-            srcQuestionOrder:   sourceQuestionOrder,
-            isFromOfficialBank: true,
-            isPublic:           true,
-          },
-        })
-        questionId = created.id
-        importedIds.push(questionId)
-        imported++
-      }
-
-      if (q.index != null && addSet.has(q.index) && questionId) {
-        const alreadyIn = await prisma.userError.findUnique({
-          where: { userId_questionId: { userId, questionId } },
-        })
-        if (!alreadyIn) {
-          const createdUserError = await prisma.userError.create({
-            data: {
-              userId, questionId,
-              myAnswer: '', errorReason: '批量导入',
-              masteryPercent: 0, reviewInterval: 1,
-              nextReviewAt: new Date(),
-            },
-          })
-          attachErrorToKnowledgeNote({
-            userId,
-            userErrorId: createdUserError.id,
-            question: {
-              type: q.type,
-              content: q.content,
-            },
-            knowledgeTitle: q.type,
-            summary: q.analysis || '批量导入后自动沉淀的知识点草稿',
-          }).catch(() => {})
-          addedToErrors++
-        }
-      }
-    } catch (err: any) {
-      console.error(`[导入] 第${i+1}题失败：${err.message}`)
-      failed++
-      if (failureReport.length < 20) {
-        failureReport.push({
-          no: q.no || String(i + 1),
-          message: err?.message || '未知异常',
-        })
+      } catch (error: any) {
+        failed += 1
+        failureReport.push({ no: q.no || String(i + 1), message: error?.message || '未知异常' })
       }
     }
-  }
 
-  // ── Fix 1: ExamTopicStats 自动填充 ─────────────────────────────
-  if (imported > 0) {
-    await rebuildExamTopicStats(d.srcSession ?? 'unknown', questions[0]?.examType ?? 'common', typeCount, d.srcYear)
-  }
-
-  // ── Fix 2: 写入 PracticePool（真题练习队列）────────────────────
-  if (importedIds.length > 0) {
-    await addToPracticePool(userId, importedIds)
-  }
-
-  // ── 触发 AnalysisQueue ─────────────────────────────────────────
-  if (importedIds.length > 0) {
-    triggerAnalysisQueue(importedIds, questions[0]?.examType ?? 'common').catch(() => {})
-  }
-
-  // ── ActivityLog ────────────────────────────────────────────────
-  import('@/lib/activity/logger').then(({ logImportCompleted }) => {
-    logImportCompleted(userId, {
-      filename:    d.srcSession ?? 'unknown',
-      examType:    questions[0]?.examType ?? 'common',
-      totalQuestions: questions.length,
-      newQuestions: imported,
-      skipped,
-      skillTagsFound:       Object.keys(typeCount),
-      analysisTasksCreated: 0,
-    }).catch(() => {})
-  })
-
-  return NextResponse.json({
-    imported,
-    skipped,
-    overwritten,
-    addedToErrors,
-    lowQuality,
-    failed,
-    total: questions.length,
-    qualityReport,   // 质检报告（前端展示）
-    failureReport,
-    duplicateMode,
-    typeBreakdown: typeCount,
-  })
-}
-
-// ── Fix 1: ExamTopicStats 自动填充 ──────────────────────────────
-async function rebuildExamTopicStats(
-  srcSession: string,
-  examType:   string,
-  typeCount:  Record<string, number>,
-  srcYear?:   string
-) {
-  // 统计该 examType 下所有题目的题型分布
-  const allByType = await prisma.question.groupBy({
-    by:    ['type'],
-    where: { examType, isFromOfficialBank: true },
-    _count: { id: true },
-  })
-
-  const total = allByType.reduce((sum, r) => sum + r._count.id, 0)
-  if (total === 0) return
-
-  for (const row of allByType) {
-    const frequency = row._count.id / total
-    const existing = await prisma.examTopicStats.findFirst({
-      where: { examType, srcProvince: null, skillTag: row.type },
-      select: { id: true },
-    })
-
-    if (existing) {
-      await prisma.examTopicStats.update({
-        where:  { id: existing.id },
-        data:   { frequency, totalCount: row._count.id, updatedAt: new Date() },
+    if (data.importJobId) {
+      await updateImportJobResult({
+        importJobId: data.importJobId,
+        importedCount: imported + overwritten,
+        status: failed > 0 ? 'done_with_errors' : 'done',
+        failReason: failureReport.length ? JSON.stringify(failureReport) : null,
       })
-      continue
     }
 
-    await prisma.examTopicStats.create({
-      data: {
-        examType,
-        srcProvince:   null,
-        skillTag:      row.type,
-        sectionType:   row.type,
-        frequency,
-        totalCount:    row._count.id,
-        avgDifficulty: 0.5,
-        lastExamYear:  srcYear ? Number(srcYear) : null,
-      },
+    const safeYear = data.srcYear || ''
+    const safeProvince = data.srcProvince || ''
+    const safeExamType = data.examType || 'common'
+    const paperKey = [safeYear, safeProvince, safeExamType].filter(Boolean).join('__')
+
+    return NextResponse.json({
+      imported,
+      skipped,
+      overwritten,
+      addedToErrors,
+      lowQuality,
+      failed,
+      total: targetQuestions.length,
+      stableIdUpdates,
+      duplicateStrategyNote: '覆盖 = 更新原题内容，保留 question.id 不变',
+      typeBreakdown,
+      qualityReport,
+      failureReport,
+      paperKey,
+      practiceHref: paperKey ? `/practice?paperKey=${encodeURIComponent(paperKey)}` : '/practice',
+      practiceHrefLimit20: paperKey ? `/practice?paperKey=${encodeURIComponent(paperKey)}&limit=20` : '/practice?limit=20',
     })
-  }
-  console.log(`[ExamTopicStats] 已更新 ${allByType.length} 个考点频率`)
-}
-
-// ── Fix 2: 真题练习池 ────────────────────────────────────────────
-// 把新导入的题写入 PracticeRecord 的"待练"状态
-// daily-tasks 读这个池子来补位真题练习
-async function addToPracticePool(userId: string, questionIds: string[]) {
-  // 过滤掉已经练过的题
-  const existing = await prisma.practiceRecord.findMany({
-    where:  { userId, questionId: { in: questionIds } },
-    select: { questionId: true },
-  })
-  const doneIds = new Set(existing.map(r => r.questionId))
-  const newIds  = questionIds.filter(id => !doneIds.has(id))
-
-  if (newIds.length === 0) return
-
-  // 批量写入 pending 状态的练习记录
-  await prisma.practiceRecord.createMany({
-    data: newIds.map(questionId => ({
-      userId,
-      questionId,
-      isCorrect:    false,
-      isPending:    true,    // 待练，还没做过
-      questionType: '',      // 从 question 表读，这里先留空
-    })),
-    skipDuplicates: true,
-  })
-  console.log(`[PracticePool] 写入 ${newIds.length} 道待练真题`)
-}
-
-// ── AnalysisQueue 触发 ─────────────────────────────────────────
-async function triggerAnalysisQueue(importedQuestionIds: string[], examType: string) {
-  const questions = await prisma.question.findMany({
-    where:  { id: { in: importedQuestionIds } },
-    select: { type: true, subtype: true },
-  })
-  const tagSet = new Set<string>()
-  questions.forEach(q => { tagSet.add(q.type); if (q.subtype) tagSet.add(q.subtype) })
-
-  const stats = await prisma.examTopicStats.findMany({
-    where:  { examType, skillTag: { in: Array.from(tagSet) } },
-    select: { skillTag: true, frequency: true },
-  })
-  const freqMap = new Map(stats.map(s => [s.skillTag, s.frequency]))
-
-  const existing = await prisma.$queryRawUnsafe<Array<{ targetId: string }>>(
-    `SELECT "targetId" FROM analysis_queue
-     WHERE "targetType"='skill_tag' AND status IN ('pending','processing','done')
-     AND "targetId" = ANY($1::text[])`,
-    Array.from(tagSet)
-  )
-  const existingIds = new Set(existing.map(e => e.targetId))
-  const newTasks = Array.from(tagSet)
-    .filter(tag => !existingIds.has(tag))
-    .map(tag => ({ triggeredBy:'import', targetType:'skill_tag', targetId:tag, priority: freqMap.get(tag) ?? 0.3, status:'pending', targetMeta: JSON.stringify({ examType }) }))
-
-  if (newTasks.length > 0) {
-    await prisma.$executeRawUnsafe(`
-      INSERT INTO analysis_queue ("id","triggeredBy","targetType","targetId","priority","status","targetMeta","createdAt","updatedAt")
-      SELECT gen_random_uuid()::text, t."triggeredBy", t."targetType", t."targetId",
-             t."priority"::float, t."status", t."targetMeta", NOW(), NOW()
-      FROM jsonb_to_recordset($1::jsonb) AS t(
-        "triggeredBy" text, "targetType" text, "targetId" text,
-        "priority" text, "status" text, "targetMeta" text
-      )
-    `, JSON.stringify(newTasks))
+  } catch (error: any) {
+    if (data.importJobId) {
+      await updateImportJobResult({
+        importJobId: data.importJobId,
+        importedCount: imported + overwritten,
+        status: 'failed',
+        failReason: error?.message || 'confirm failed',
+      }).catch(() => {})
+    }
+    return NextResponse.json({ error: error?.message || '导入确认失败' }, { status: 500 })
   }
 }

@@ -28,6 +28,8 @@ model User {
   userErrors       UserError[]
   insights         UserInsight[]
   notes            UserNote[]
+  knowledgeNodes   KnowledgeNode[]
+  noteAssets       NoteAsset[]
   sectionStats     UserSectionStats?
 
   @@map("users")
@@ -149,21 +151,60 @@ model PracticeRecord {
 }
 
 model UserNote {
-  id        String   @id @default(cuid())
-  userId    String
-  type      String
-  subtype   String?
-  module2   String?
-  module3   String?
-  sourceErrorIds String?
-  title     String
-  content   String
-  isPrivate Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  user      User     @relation(fields: [userId], references: [id])
+  id              String         @id @default(cuid())
+  userId          String
+  knowledgeNodeId String?
+  type            String
+  subtype         String?
+  module2         String?
+  module3         String?
+  sourceErrorIds  String?
+  title           String
+  content         String
+  isPrivate       Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  user            User           @relation(fields: [userId], references: [id])
+  knowledgeNode   KnowledgeNode? @relation(fields: [knowledgeNodeId], references: [id])
+  assets          NoteAsset[]
 
+  @@index([userId, knowledgeNodeId, updatedAt])
   @@map("user_notes")
+}
+
+model KnowledgeNode {
+  id        String          @id @default(cuid())
+  userId    String
+  parentId  String?
+  nodeType  String          @default("knowledge")
+  title     String
+  source    String          @default("manual")
+  sortOrder Int             @default(0)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  user      User            @relation(fields: [userId], references: [id])
+  parent    KnowledgeNode?  @relation("KnowledgeNodeChildren", fields: [parentId], references: [id])
+  children  KnowledgeNode[] @relation("KnowledgeNodeChildren")
+  notes     UserNote[]
+
+  @@index([userId, parentId, sortOrder])
+  @@index([userId, nodeType])
+  @@map("knowledge_nodes")
+}
+
+model NoteAsset {
+  id        String    @id @default(cuid())
+  noteId     String?
+  userId    String
+  altText   String?
+  mimeType  String
+  dataUrl   String
+  createdAt DateTime  @default(now())
+  note      UserNote? @relation(fields: [noteId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@index([userId, noteId, createdAt])
+  @@map("note_assets")
 }
 
 model UserInsight {

@@ -1,138 +1,45 @@
-import type { ParsedQuestion } from '../parsers/pdf-parser'
-
 export type DuplicateMode = 'skip' | 'replace_low_quality' | 'force_replace'
 
-export interface ExistingQuestionSnapshot {
-  content: string
-  options: string | null
-  answer: string | null
-  analysis?: string | null
-  type: string | null
-  srcExamSession?: string | null
-  srcQuestionNo?: string | null
-  srcQuestionOrder?: number | null
+export function normalizeText(value: string) {
+  return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
-export function normalizeText(text: string) {
-  return text
-    .replace(/\s+/g, '')
-    .replace(/[（）()【】\[\]，。、“”‘’：:；;,.!?？！\-—_]/g, '')
-    .trim()
-}
-
-export function buildFingerprint(q: ParsedQuestion) {
+export function buildFingerprint(input: { content: string; options?: string[]; answer?: string }) {
   return [
-    normalizeText(q.content).slice(0, 180),
-    q.options.map(opt => normalizeText(opt)).join('|'),
-    q.answer || '',
-    q.type || '',
-  ].join('::')
+    normalizeText(input.content),
+    (input.options || []).map(item => normalizeText(item)).join('|'),
+    String(input.answer || '').trim().toUpperCase(),
+  ].join('||')
 }
 
-export function qualityCheck(q: ParsedQuestion): {
-  score: number
-  issues: string[]
-} {
+export function qualityCheck(input: { content: string; options?: string[]; answer?: string; analysis?: string }) {
   const issues: string[] = []
   let score = 100
-  const normalizedContentLength = normalizeText(q.content).length
-  const hasFullOptions = q.options.length >= 4
-  const hasImage = Boolean(q.questionImage)
-  const isMaterialDrivenType = q.type === '资料分析'
-  const isLikelyLegitimateShortStem = hasFullOptions && (
-    (q.type === '判断推理' && /[：:?？]/.test(q.content))
-    || (q.type === '判断推理' && /对于/.test(q.content))
-    || (q.type === '常识判断' && /^下列|^关于/.test(q.content))
-  )
-
-  if (normalizedContentLength < 8 && !isLikelyLegitimateShortStem) {
-    issues.push('题目过短，可能截断')
-    score -= 30
-  } else if (normalizedContentLength < 20 && !hasImage && !(isMaterialDrivenType && hasFullOptions) && !isLikelyLegitimateShortStem) {
-    issues.push('题目过短，可能截断')
-    score -= 20
-  }
-  if (q.options.length < 4) { issues.push(`选项只有${q.options.length}个`); score -= 20 }
-  if (!q.answer) { issues.push('缺少答案'); score -= 15 }
-  if (q.answer && !/^[ABCD]$/.test(q.answer)) { issues.push(`答案格式异常: ${q.answer}`); score -= 15 }
-
-  if (q.options.length > 0) {
-    const letters = q.options.map(o => o.charAt(0)).sort()
-    const expected = ['A', 'B', 'C', 'D'].slice(0, letters.length)
-    if (JSON.stringify(letters) !== JSON.stringify(expected)) {
-      issues.push('选项字母不连续'); score -= 10
-    }
-  }
-
-  if (/[AB]\.[^\n]{2,}[CD]\./.test(q.content)) {
-    issues.push('选项可能混入题目正文'); score -= 20
-  }
-
-  if (!q.analysis?.trim()) {
-    score -= 5
-  }
-
+  if (!input.content || normalizeText(input.content).length < 8) { issues.push('题干过短'); score -= 40 }
+  if ((input.options || []).length < 2) { issues.push('选项不足'); score -= 20 }
+  if (!input.answer) { issues.push('缺少答案'); score -= 20 }
+  if (!input.analysis) { issues.push('缺少解析'); score -= 10 }
   return { score: Math.max(0, score), issues }
 }
 
-export function toParsedQuestion(existing: ExistingQuestionSnapshot): ParsedQuestion {
-  let options: string[] = []
-  try {
-    const parsed = JSON.parse(existing.options ?? '[]')
-    if (Array.isArray(parsed)) {
-      options = parsed.map(item => String(item))
-    }
-  } catch {}
-
-  return {
-    no: existing.srcQuestionNo ?? '',
-    content: existing.content ?? '',
-    options,
-    answer: existing.answer ?? '',
-    type: existing.type ?? '',
-    analysis: existing.analysis ?? '',
-    rawText: '',
-  }
+function safeParseOptions(raw?: string | null) {
+  if (!raw) return []
+  try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
 }
 
-export function shouldReplaceExisting(
-  mode: DuplicateMode,
-  incoming: ParsedQuestion,
-  existing: ExistingQuestionSnapshot
-) {
-  if (mode === 'force_replace') {
-    return true
-  }
-
-  if (mode === 'skip') {
-    return false
-  }
-
-  const incomingQuality = qualityCheck(incoming)
-  const existingParsed = toParsedQuestion(existing)
-  const existingQuality = qualityCheck(existingParsed)
-
-  const incomingHasMoreOptions = incoming.options.length > existingParsed.options.length
-  const incomingHasAnswer = Boolean(incoming.answer) && !existing.answer
-  const incomingHasAnalysis = Boolean(incoming.analysis?.trim()) && !existing.analysis?.trim()
-  const incomingContentClearlyLonger = normalizeText(incoming.content).length >= normalizeText(existing.content ?? '').length + 6
-  const existingMissingCoreFields = (
-    existingParsed.options.length < 4
-    || !existing.answer
-    || !existing.analysis?.trim()
-  )
-  const incomingClearlyBetter = incomingQuality.score >= existingQuality.score + 10
-  const existingIsLowQuality = existingQuality.score < 75
-
-  return (
-    existingIsLowQuality
-    || existingMissingCoreFields
-    || incomingContentClearlyLonger
-  ) && (
-    incomingClearlyBetter
-    || incomingHasMoreOptions
-    || incomingHasAnswer
-    || incomingHasAnalysis
-    || incomingContentClearlyLonger
-  )
+export function shouldReplaceExisting(params: {
+  mode: DuplicateMode
+  existing: { content?: string | null; options?: string | null; analysis?: string | null; answer?: string | null }
+  incoming: { content: string; options: string[]; analysis?: string; answer?: string }
+}) {
+  if (params.mode === 'force_replace') return true
+  if (params.mode === 'skip') return false
+  const existingQuality = qualityCheck({
+    content: params.existing.content || '',
+    options: safeParseOptions(params.existing.options),
+    analysis: params.existing.analysis || '',
+    answer: params.existing.answer || '',
+  })
+  const incomingQuality = qualityCheck(params.incoming)
+  return incomingQuality.score > existingQuality.score
 }

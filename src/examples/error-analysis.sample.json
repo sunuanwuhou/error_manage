@@ -1,0 +1,38 @@
+{
+  "analysisId": "analysis_001",
+  "questionId": "q_2026_001",
+  "attemptId": "attempt_001",
+  "scoreId": "score_001",
+  "processIds": ["process_session_001"],
+  "isWrong": true,
+  "scoreStatus": "wrong",
+  "confidence": 0.88,
+  "errorTypePrimary": "计算错误",
+  "errorTypeSecondary": ["抄数错误", "单位换算错误"],
+  "rootCause": "已列出正确思路，但在最后换算环节把万误当成亿，导致结果偏大。",
+  "triggerEvidence": [
+    {
+      "code": "PROCESS_UNIT_SWITCH",
+      "label": "过程出现单位切换",
+      "message": "草稿中先按万计算，最终答案区写成亿。",
+      "source": "process"
+    },
+    {
+      "code": "ANSWER_NOT_MATCH",
+      "label": "答案与标准答案不一致",
+      "message": "用户提交 B，标准答案 A。",
+      "source": "answer"
+    }
+  ],
+  "wrongStepIndex": 4,
+  "wrongStepText": "结果换算为亿时未同步调整数值位数。",
+  "nextAction": "先回看单位换算笔记，再做 3 题同类资料分析换算题。",
+  "retryRecommended": true,
+  "reviewKnowledgeNodeIds": ["data-analysis/unit-conversion"],
+  "reviewNoteIds": ["note_unit_conversion_01"],
+  "trainingMode": "same_error_training",
+  "analysisVersion": 1,
+  "analysisMode": "rule",
+  "generatedAt": "2026-04-01T11:00:00+08:00",
+  "generatedBy": "system-rule-engine"
+}

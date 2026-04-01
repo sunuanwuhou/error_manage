@@ -3,258 +3,282 @@ import { getServerSession } from 'next-auth'
 
 import { authOptions } from '@/lib/auth'
 import { recognizeQuestionFromImage } from '@/lib/import/ocr'
-import { parseDocxBuffer } from '@/lib/parsers/docx-parser'
-import type { ParsedQuestion } from '@/lib/parsers/pdf-parser'
+import { parseDocxBuffer, type ParsedQuestion } from '@/lib/parsers/docx-parser'
 import { inferPaperSourceMeta } from '@/lib/paper-source'
+import { createImportJob } from '@/lib/import/import-job'
 
 const MAX_SIZE = 20 * 1024 * 1024
+const MAX_BATCH_FILES = 200
+
+function normalizeAnswerText(answer: string) {
+  return String(answer || '')
+    .trim()
+    .replace(/[Ａ-Ｄ]/g, s => String.fromCharCode(s.charCodeAt(0) - 65248))
+    .replace(/对/g, '正确')
+    .replace(/错/g, '错误')
+    .toUpperCase()
+}
+
+function parseStructuredText(text: string): ParsedQuestion[] {
+  const lines = String(text || '').replace(/\r/g, '').split('\n')
+  const questions: ParsedQuestion[] = []
+  let current: ParsedQuestion | null = null
+  const qRe = /^\s*(\d{1,3})[\.．、]\s*(.+)$/
+  const optRe = /^\s*([A-DＡ-Ｄ])[\.．、\)）:：]\s*(.+)$/
+  const ansRe = /^\s*(?:答案|参考答案)\s*[:：]\s*(.+)$/
+  const anaRe = /^\s*(?:解析|答案解析|参考解析)\s*[:：]\s*(.*)$/
+
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) continue
+    const q = line.match(qRe)
+    if (q) {
+      if (current) questions.push(current)
+      current = { no: q[1], content: q[2].trim(), options: [], answer: '', type: '单项选择题', analysis: '', rawText: line }
+      continue
+    }
+    if (!current) continue
+    const opt = line.match(optRe)
+    if (opt) {
+      const key = opt[1].replace(/[Ａ-Ｄ]/g, s => String.fromCharCode(s.charCodeAt(0) - 65248))
+      current.options.push(`${key}.${opt[2].trim()}`)
+      continue
+    }
+    const ans = line.match(ansRe)
+    if (ans) {
+      current.answer = normalizeAnswerText(ans[1])
+      continue
+    }
+    const ana = line.match(anaRe)
+    if (ana) {
+      current.analysis = [current.analysis || '', ana[1].trim()].filter(Boolean).join('\n')
+      continue
+    }
+    if (current.options.length) current.analysis = [current.analysis || '', line].filter(Boolean).join('\n')
+    else current.content = `${current.content}\n${line}`.trim()
+  }
+  if (current) questions.push(current)
+  return questions
+}
+
+function parseJsonQuestions(text: string): ParsedQuestion[] {
+  const data = JSON.parse(text)
+  const list = Array.isArray(data) ? data : Array.isArray(data?.questions) ? data.questions : []
+  return list.map((item: any, index: number) => ({
+    no: String(item.no || item.questionNo || index + 1),
+    content: String(item.content || item.stem || '').trim(),
+    questionImage: String(item.questionImage || item.image || '').trim(),
+    options: Array.isArray(item.options) ? item.options.map((v: any) => String(v || '').trim()).filter(Boolean) : [],
+    answer: normalizeAnswerText(String(item.answer || '')),
+    type: String(item.type || '单项选择题').trim(),
+    analysis: String(item.analysis || '').trim(),
+    rawText: String(item.rawText || '').trim(),
+  }))
+}
+
 
 function normalizeOptionText(option: string) {
-  return String(option || '')
-    .replace(/^[A-DＡ-Ｄ][.\u3001\uff0e\)\uff09:\uff1a]\s*/i, '')
-    .trim()
-}
-
-function normalizeBoolToken(value: string) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[（(].*?[)）]/g, '')
-    .replace(/[^a-z\u4e00-\u9fa5]/g, '')
-}
-
-function isJudgeQuestion(question: ParsedQuestion) {
-  const options = question.options.map(option => normalizeOptionText(option))
-  const judgeTokens = new Set(['正确', '错误', '对', '错', 'true', 'false', 't', 'f'])
-
-  if (options.length === 2 && options.every(option => judgeTokens.has(normalizeBoolToken(option)))) {
-    return true
-  }
-  if (options.length > 0) return false
-
-  const content = String(question.content || '')
-  return /判断.*(?:对错|正误)|正确.*还是.*错误|下列说法.*(?:正确|错误)/.test(content)
+  return String(option || '').replace(/^[A-DＡ-Ｄ][.\u3001\uff0e\)\uff09:\uff1a]\s*/i, '').trim()
 }
 
 function normalizeJudgeQuestion(question: ParsedQuestion): ParsedQuestion {
-  if (!isJudgeQuestion(question)) return question
+  const options = (question.options || []).map(normalizeOptionText)
+  const judgeLike = options.length === 2 && options.every(item => /正确|错误|对|错/.test(item))
+  if (!judgeLike) return question
+  const answerRaw = String(question.answer || '').trim().toUpperCase()
+  const answer = ['B', '错误', '错'].includes(answerRaw) ? 'B' : 'A'
+  return { ...question, type: '判断推理', options: ['A.正确', 'B.错误'], answer }
+}
 
-  const answerRaw = normalizeBoolToken(question.answer || '')
-  let answer = 'A'
-  if (['b', '错误', '错', 'false', 'f'].includes(answerRaw)) {
-    answer = 'B'
-  } else if (['a', '正确', '对', 'true', 't'].includes(answerRaw)) {
-    answer = 'A'
-  }
-
+function normalizeQuestion(question: ParsedQuestion) {
   return {
     ...question,
-    type: '判断推理',
-    options: ['A.正确', 'B.错误'],
-    answer,
+    content: String(question.content || '').replace(/（\s*）/g, '（_）').replace(/\(\s*\)/g, '(_)'),
   }
-}
-
-function normalizeVerbalBlanks(content: string, type: string) {
-  if (!type.includes('言语')) return content
-  return String(content || '')
-    .replace(/（\s*）/g, '（_）')
-    .replace(/\(\s*\)/g, '(_)')
-    .replace(/“\s+”/g, '“_”')
-    .replace(/‘\s+’/g, '‘_’')
-}
-
-function trySplitInlineOptions(content: string, options: string[]) {
-  if (options.length >= 2) return { content, options }
-
-  const text = String(content || '')
-    .replace(/[Ａ]/g, 'A')
-    .replace(/[Ｂ]/g, 'B')
-    .replace(/[Ｃ]/g, 'C')
-    .replace(/[Ｄ]/g, 'D')
-    .trim()
-  if (!text) return { content, options }
-
-  const marker = /([A-D])\s*[.\u3001\uff0e\)\uff09:\uff1a]\s*/g
-  const matches = [...text.matchAll(marker)]
-  if (matches.length < 4) return { content, options }
-
-  const pos = new Map<string, number>()
-  for (const letter of ['A', 'B', 'C', 'D']) {
-    const hit = matches.find(item => item[1] === letter && typeof item.index === 'number')
-    if (!hit || typeof hit.index !== 'number') return { content, options }
-    pos.set(letter, hit.index)
-  }
-  const a = pos.get('A')!
-  const b = pos.get('B')!
-  const c = pos.get('C')!
-  const d = pos.get('D')!
-  if (!(a < b && b < c && c < d) || a <= 0) return { content, options }
-
-  const buildOption = (from: number, to: number) => {
-    const chunk = text.slice(from, to)
-    const m = chunk.match(/^([A-D])\s*[.\u3001\uff0e\)\uff09:\uff1a]\s*([\s\S]*)$/)
-    if (!m) return ''
-    const body = normalizeOptionText(m[2])
-    return body ? `${m[1]}.${body}` : ''
-  }
-
-  const nextOptions = [
-    buildOption(a, b),
-    buildOption(b, c),
-    buildOption(c, d),
-    buildOption(d, text.length),
-  ].filter(Boolean)
-
-  if (nextOptions.length < 4) return { content, options }
-  return {
-    content: text.slice(0, a).trim(),
-    options: nextOptions,
-  }
-}
-
-function normalizeImportedQuestion(question: ParsedQuestion): ParsedQuestion {
-  const type = String(question.type || '')
-  const withBlanks = normalizeVerbalBlanks(String(question.content || ''), type)
-  const split = trySplitInlineOptions(withBlanks, question.options || [])
-  return {
-    ...question,
-    content: split.content,
-    options: split.options,
-  }
-}
-
-function shouldRunOcr(question: ParsedQuestion) {
-  if (!question.questionImage) return false
-  const type = String(question.type || '')
-  if (type.includes('资料分析')) return false
-  if (type.includes('图形推理')) return false
-  return true
-}
-
-function isImagePlaceholderOption(option: string) {
-  const text = normalizeOptionText(option)
-  return !text || text === '见图' || /\[图[A-D]?\]/.test(text)
-}
-
-function shouldUseOcrOptions(originalOptions: string[], ocrOptions: string[]) {
-  if (ocrOptions.length < 2) return false
-  if (originalOptions.length < 2) return true
-  const placeholderCount = originalOptions.filter(isImagePlaceholderOption).length
-  return placeholderCount >= Math.ceil(originalOptions.length / 2)
-}
-
-function looksLikeValidStem(content: string) {
-  const text = String(content || '').trim()
-  return text.length >= 8
-}
-
-function parseDataUrlToFile(dataUrl: string, name: string) {
-  const match = dataUrl.match(/^data:(.+?);base64,(.+)$/)
-  if (!match) return null
-  const mimeType = match[1]
-  const payload = match[2]
-  const buffer = Buffer.from(payload, 'base64')
-  return new File([buffer], name, { type: mimeType })
 }
 
 async function enhanceQuestionByOcr(question: ParsedQuestion): Promise<ParsedQuestion> {
-  if (!shouldRunOcr(question)) return question
-  if (!process.env.MINIMAX_API_KEY) return question
+  if (!question.questionImage) return question
+  if (/资料分析|图形推理/.test(String(question.type || ''))) return question
 
-  const file = parseDataUrlToFile(question.questionImage || '', 'docx-question-image')
-  if (!file) return question
+  const match = String(question.questionImage).match(/^data:(.+?);base64,(.+)$/)
+  if (!match) return question
+  const mime = match[1]
+  const b64 = match[2]
+  const file = new File([Buffer.from(b64, 'base64')], 'question-image.png', { type: mime })
 
   try {
     const ocr = await recognizeQuestionFromImage(file)
-    const next: ParsedQuestion = { ...question }
-
-    if (looksLikeValidStem(ocr.content) && ocr.content !== question.content) {
-      next.content = ocr.content
+    return {
+      ...question,
+      content: ocr.content && ocr.content.length > (question.content || '').length ? ocr.content : question.content,
+      options: (ocr.options && ocr.options.length >= 2) ? ocr.options : question.options,
+      answer: question.answer || ocr.answer || '',
+      analysis: question.analysis || ocr.analysis || '',
+      type: question.type || ocr.type || '单项选择题',
     }
-
-    if (shouldUseOcrOptions(question.options, ocr.options)) {
-      next.options = ocr.options
-    }
-
-    if (!next.answer && ocr.answer) {
-      next.answer = ocr.answer
-    }
-
-    if ((!next.analysis || next.analysis.length < 10) && ocr.analysis) {
-      next.analysis = ocr.analysis
-    }
-
-    if ((!next.type || next.type.length < 2) && ocr.type) {
-      next.type = ocr.type
-    }
-
-    return next
   } catch {
     return question
   }
 }
 
+
+
+type ParseFileResult = {
+  indexedQuestions: any[]
+  warnings: string[]
+  inferredMeta: ReturnType<typeof inferPaperSourceMeta>
+}
+
+async function parseImportFile(params: { file: File; examType: string; srcName: string; displayName?: string }): Promise<ParseFileResult> {
+  const { file, examType, srcName, displayName } = params
+  const fileName = file.name.toLowerCase()
+  const fileLabel = displayName || file.name
+  const inferredMeta = inferPaperSourceMeta({ fileName: fileLabel, srcName })
+  let indexedQuestions: any[] = []
+  const warnings: string[] = []
+
+  if (fileName.endsWith('.docx')) {
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const result = await parseDocxBuffer(buffer)
+    let enhancedCount = 0
+    const questions: ParsedQuestion[] = []
+    for (const raw of result.questions) {
+      const ocrEnhanced = await enhanceQuestionByOcr(raw)
+      if (
+        ocrEnhanced.content !== raw.content ||
+        (ocrEnhanced.options || []).join('|') !== (raw.options || []).join('|') ||
+        ocrEnhanced.answer !== raw.answer
+      ) enhancedCount += 1
+      questions.push(normalizeJudgeQuestion(normalizeQuestion(ocrEnhanced)))
+    }
+    indexedQuestions = questions.map((q, index) => ({
+      ...q,
+      index,
+      examType: inferredMeta.examType || examType,
+      srcName: inferredMeta.srcName || srcName || fileLabel,
+      srcOrigin: 'file_import',
+    }))
+    warnings.push(...result.warnings)
+    if (enhancedCount > 0) warnings.unshift(`OCR 增强修复 ${enhancedCount} 道图片题`)
+    warnings.unshift(`DOCX 共解析到 ${indexedQuestions.length} 道题`)
+  } else if (/\.(json)$/i.test(fileName)) {
+    const raw = await file.text()
+    const questions = parseJsonQuestions(raw).map((q, index) => ({
+      ...normalizeJudgeQuestion(normalizeQuestion(q)),
+      index,
+      examType: inferredMeta.examType || examType,
+      srcName: inferredMeta.srcName || srcName || fileLabel,
+      srcOrigin: 'json_import',
+    }))
+    indexedQuestions = questions
+    warnings.unshift(`JSON 共解析到 ${indexedQuestions.length} 道题`)
+  } else if (/\.(txt|md)$/i.test(fileName)) {
+    const raw = await file.text()
+    const questions = parseStructuredText(raw).map((q, index) => ({
+      ...normalizeJudgeQuestion(normalizeQuestion(q)),
+      index,
+      examType: inferredMeta.examType || examType,
+      srcName: inferredMeta.srcName || srcName || fileLabel,
+      srcOrigin: 'text_import',
+    }))
+    indexedQuestions = questions
+    warnings.unshift(`文本共解析到 ${indexedQuestions.length} 道题`)
+    warnings.push('TXT/MD 导入要求使用“1.题干 / A.选项 / 答案：A / 解析：...”结构。')
+  } else if (/\.(png|jpg|jpeg|bmp|webp)$/i.test(fileName)) {
+    const ocr = await recognizeQuestionFromImage(file)
+    indexedQuestions = [{
+      index: 0,
+      no: '1',
+      content: ocr.content,
+      questionImage: '',
+      options: ocr.options,
+      answer: ocr.answer || '',
+      type: ocr.type || '单项选择题',
+      analysis: ocr.analysis || '',
+      rawText: ocr.rawText || '',
+      examType: inferredMeta.examType || examType,
+      srcName: inferredMeta.srcName || srcName || fileLabel,
+      srcOrigin: 'image_import',
+    }]
+    warnings.push('当前为单图导入模式，适合单题补录或截图补录。')
+  } else {
+    throw new Error(`文件 ${fileLabel} 格式不支持`)
+  }
+
+  return { indexedQuestions, warnings, inferredMeta }
+}
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session?.user) return NextResponse.json({ error: '未登录' }, { status: 401 })
+  const userId = (session.user as any).id
 
   const formData = await req.formData()
   const file = formData.get('file') as File | null
+  const files = formData.getAll('files').filter(Boolean) as File[]
+  const relativePaths = formData.getAll('relativePaths').map(item => String(item || ''))
   const examType = (formData.get('examType') as string) || 'guo_kao'
   const srcName = (formData.get('srcName') as string) || ''
 
-  if (!file) return NextResponse.json({ error: '请选择文件' }, { status: 400 })
-  if (file.size > MAX_SIZE) return NextResponse.json({ error: '文件不能超过 20MB' }, { status: 400 })
-
-  const fileName = file.name.toLowerCase()
-  if (fileName.endsWith('.pdf')) {
-    return NextResponse.json({ error: 'PDF 导入暂未开放，请先使用 DOCX 导入' }, { status: 400 })
-  }
-  if (fileName.endsWith('.doc')) {
-    return NextResponse.json({ error: '暂不直接支持 .doc，请先另存为 .docx 后再导入' }, { status: 400 })
-  }
-  if (!fileName.endsWith('.docx')) {
-    return NextResponse.json({ error: '当前仅支持 DOCX 导入，请上传 .docx 文件' }, { status: 400 })
+  const inputFiles = (files.length ? files : file ? [file] : []).filter(Boolean)
+  if (!inputFiles.length) return NextResponse.json({ error: '请选择文件' }, { status: 400 })
+  if (inputFiles.length > MAX_BATCH_FILES) {
+    return NextResponse.json({ error: `单次最多导入 ${MAX_BATCH_FILES} 个文件` }, { status: 400 })
   }
 
-  const inferredMeta = inferPaperSourceMeta({
-    fileName: file.name,
-    srcName,
-  })
+  for (const item of inputFiles) {
+    if (item.size > MAX_SIZE) {
+      return NextResponse.json({ error: `文件 ${item.name} 不能超过 20MB` }, { status: 400 })
+    }
+  }
 
   try {
-    const buffer = Buffer.from(await file.arrayBuffer())
-    const result = await parseDocxBuffer(buffer)
+    const mergedQuestions: any[] = []
+    const warnings: string[] = []
+    const fileSummaries: any[] = []
+    let inferredMeta = inferPaperSourceMeta({ fileName: inputFiles[0]?.name || '', srcName })
 
-    let ocrEnhancedCount = 0
-    const enhancedQuestions: ParsedQuestion[] = []
-    for (const question of result.questions) {
-      const enhanced = await enhanceQuestionByOcr(question)
-      const normalized = normalizeImportedQuestion(enhanced)
-      if (
-        normalized.content !== question.content ||
-        normalized.options.join('|') !== question.options.join('|') ||
-        normalized.answer !== question.answer
-      ) {
-        ocrEnhancedCount += 1
+    for (let idx = 0; idx < inputFiles.length; idx += 1) {
+      const currentFile = inputFiles[idx]
+      const relativePath = relativePaths[idx] || ''
+      const displayName = relativePath || currentFile.name
+      try {
+        const result = await parseImportFile({ file: currentFile, examType, srcName, displayName })
+        if (!mergedQuestions.length) inferredMeta = result.inferredMeta
+        const offset = mergedQuestions.length
+        const normalized = result.indexedQuestions.map((q, qIndex) => ({
+          ...q,
+          index: offset + qIndex,
+          fileName: currentFile.name,
+          relativePath,
+        }))
+        mergedQuestions.push(...normalized)
+        fileSummaries.push({
+          fileName: currentFile.name,
+          relativePath,
+          total: normalized.length,
+          warnings: result.warnings,
+          status: 'parsed',
+        })
+        warnings.push(`[${displayName}] ${normalized.length} 道题`)
+        result.warnings.forEach(item => warnings.push(`[${displayName}] ${item}`))
+      } catch (error: any) {
+        fileSummaries.push({
+          fileName: currentFile.name,
+          relativePath,
+          total: 0,
+          warnings: [String(error?.message || '解析失败')],
+          status: 'skipped',
+        })
+        warnings.push(`[${displayName}] 跳过：${String(error?.message || '解析失败')}`)
       }
-      enhancedQuestions.push(normalizeJudgeQuestion(normalized))
     }
 
-    const warnings = [
-      `DOCX 共解析到 ${enhancedQuestions.length} 道题`,
-      ...result.warnings,
-    ]
-    if (ocrEnhancedCount > 0) {
-      warnings.unshift(`OCR 增强修复 ${ocrEnhancedCount} 道图片题`)
-    }
-
-    if (enhancedQuestions.length === 0) {
+    if (!mergedQuestions.length) {
       return NextResponse.json({ error: '未能解析出任何题目', warnings }, { status: 422 })
     }
 
-    const indexedQuestions = enhancedQuestions.map((question, index) => ({ ...question, index }))
-    const preview = indexedQuestions.slice(0, 50).map(question => ({
+    const preview = mergedQuestions.slice(0, 200).map(question => ({
       index: question.index,
       no: question.no,
       content: question.content.slice(0, 120) + (question.content.length > 120 ? '...' : ''),
@@ -263,21 +287,29 @@ export async function POST(req: NextRequest) {
       answer: question.answer,
       type: question.type,
       hasAnalysis: Boolean(question.analysis),
+      rawText: question.rawText,
+      fileName: question.fileName,
+      relativePath: question.relativePath,
     }))
 
+    const batchLabel = inputFiles.length > 1 ? `batch_${inputFiles.length}_files` : inputFiles[0].name
+    const importJob = await createImportJob({
+      userId,
+      filename: batchLabel,
+      parsedQuestions: JSON.stringify(mergedQuestions),
+      status: 'parsed',
+    })
+
     return NextResponse.json({
-      total: enhancedQuestions.length,
+      importJobId: importJob.id,
+      total: mergedQuestions.length,
       preview,
       warnings,
       inferredMeta,
-      payload: Buffer.from(JSON.stringify(
-        indexedQuestions.map(question => ({
-          ...question,
-          examType: inferredMeta.examType || examType,
-          srcName: inferredMeta.srcName || srcName || file.name,
-          srcOrigin: 'file_import',
-        }))
-      )).toString('base64'),
+      fileSummaries,
+      isBatch: inputFiles.length > 1,
+      batchFileCount: inputFiles.length,
+      payload: Buffer.from(JSON.stringify(mergedQuestions)).toString('base64'),
     })
   } catch (error: any) {
     return NextResponse.json({ error: `解析失败：${error?.message ?? 'unknown error'}` }, { status: 500 })
