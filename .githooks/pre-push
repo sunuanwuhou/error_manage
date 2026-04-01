@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+set -e
+
+echo "[pre-push] run typecheck"
+npm run typecheck
+
+echo "[pre-push] run backend smoke"
+npm run smoke:backend
+
+echo "[pre-push] done"
